@@ -1,0 +1,30 @@
+# dependencies
+**/node_modules
+
+# testing
+**/coverage
+
+# build
+**/dist
+**/build
+**/dist-zip
+chrome-extension/manifest.js
+chrome-extension/pre-build.tsconfig.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# env
+**/.env.*
+**/.env
+
+# ffmpeg wasm assets (fetched via pnpm --filter chrome-extension fetch:ffmpeg)
+chrome-extension/public/ffmpeg/ffmpeg-core.js
+chrome-extension/public/ffmpeg/ffmpeg-core.wasm
+chrome-extension/public/ffmpeg/ffmpeg-core.worker.js
+
+# etc
+.DS_Store
+.idea
+**/.turbo
+
+# compiled
+**/tailwind-output.css

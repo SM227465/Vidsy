@@ -1,0 +1,63 @@
+name: Build & Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build extension and publish pre-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Build extension
+        run: pnpm build
+
+      - name: Read version from package.json
+        id: version
+        run: echo "value=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Get short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Zip dist folder
+        run: |
+          cd dist
+          zip -r ../Vidsy-v${{ steps.version.outputs.value }}-${{ steps.sha.outputs.short }}.zip .
+          cd ..
+
+      - name: Create pre-release with artifact
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev-v${{ steps.version.outputs.value }}-${{ steps.sha.outputs.short }}
+          name: "Dev Build v${{ steps.version.outputs.value }} (${{ steps.sha.outputs.short }})"
+          body: |
+            **Automated development build**
+
+            Version: `${{ steps.version.outputs.value }}`
+            Commit: `${{ github.sha }}`
+            Branch: `main`
+            Triggered by: ${{ github.actor }}
+
+            > Pre-release built from the `main` branch. Each build is preserved as its own release.
+            > Install by loading the zip as an unpacked extension in Chrome.
+          prerelease: true
+          files: Vidsy-v${{ steps.version.outputs.value }}-${{ steps.sha.outputs.short }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
