@@ -142,11 +142,10 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
     return;
   }
 
-  // If this tab already has an HLS/DASH stream, skip element-source video detections
-  // (these are usually <video> elements pointing to non-downloadable blob:/page URLs
-  // or hover preview clips that slipped through content script filtering)
+  // Once an HLS/DASH manifest exists for this tab, treat any further video/audio
+  // detections (element OR network) as player segments and suppress them — the
+  // manifest is the downloadable artifact, individual segments are not.
   if (
-    candidate.source === 'element' &&
     (candidate.kind === 'video' || candidate.kind === 'audio') &&
     current.some(item => item.kind === 'hls' || item.kind === 'dash')
   ) {

@@ -231,6 +231,9 @@ export const downloadDashMuxed = async (
   // Fetch the MPD once — we need it for duration in both paths and for
   // segment URLs in the auth-fallback path.
   const mpdText = await fetchMpdText(manifestUrl);
+  if (/<ContentProtection\b/i.test(mpdText)) {
+    throw new Error('This video is DRM-protected and cannot be downloaded.');
+  }
   const durationSeconds = dashManifestDurationSeconds(mpdText);
   let videoInputOpfs: string | null = null;
   let audioInputOpfs: string | null = null;

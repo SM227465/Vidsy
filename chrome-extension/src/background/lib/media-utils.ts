@@ -73,7 +73,11 @@ export const isDashSegment = (url: string, mime?: string) => {
   const ext = getPathExtension(url);
   const lowerUrl = url.toLowerCase();
   const lowerMime = mime?.toLowerCase() ?? '';
-  if (ext === '.m4s' || ext === '.cmfv' || lowerUrl.includes('/dash/seg') || lowerUrl.includes('range/')) return true;
+  if (ext === '.m4s' || ext === '.cmfv' || ext === '.cmfa' || ext === '.m4v' || ext === '.m4a') return true;
+  if (lowerUrl.includes('/dash/') || lowerUrl.includes('/cmaf/') || lowerUrl.includes('range/')) return true;
+  // Typical DASH/CMAF file-naming: init.mp4, init-stream0.mp4, segment_1.mp4, chunk-0-00001.mp4
+  const lastSeg = lowerUrl.split('?')[0].split('/').pop() ?? '';
+  if (/^(init|segment[_-]?\d+|chunk[_-]?\d+|seg[_-]?\d+|frag[_-]?\d+)/.test(lastSeg)) return true;
   if (lowerMime.includes('mp4') && lowerUrl.includes('seg')) return true;
   return false;
 };

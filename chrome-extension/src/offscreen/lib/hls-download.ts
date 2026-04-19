@@ -20,6 +20,14 @@ const resolveVariantPlaylist = async (playlistUrl: string): Promise<ResolvedPlay
   const res = await fetch(playlistUrl, { credentials: 'include' });
   if (!res.ok) throw new Error(`Failed to fetch HLS playlist: ${res.status}`);
   const manifestText = await res.text();
+  // SAMPLE-AES / FairPlay / PlayReady / Widevine = DRM. Plain AES-128 is fine — libav handles it.
+  if (
+    /METHOD=SAMPLE-AES|URI="skd:\/\/|KEYFORMAT="(?:com\.apple\.streamingkeydelivery|com\.microsoft\.playready|com\.widevine\.alpha|urn:uuid:)/i.test(
+      manifestText,
+    )
+  ) {
+    throw new Error('This video is DRM-protected and cannot be downloaded.');
+  }
   if (!manifestText.includes('#EXT-X-STREAM-INF')) return { url: playlistUrl, manifestText };
 
   const lines = manifestText.split('\n').map(l => l.trim());
