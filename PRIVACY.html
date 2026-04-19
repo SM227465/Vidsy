@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Vidsy — Privacy Policy</title>
+<style>
+  body { font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif; max-width: 720px; margin: 3rem auto; padding: 0 1.25rem; line-height: 1.6; color: #1a1a1a; }
+  h1 { font-size: 1.75rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; }
+  .meta { color: #666; font-size: 0.9rem; margin-bottom: 2rem; }
+  code { background: #f4f4f4; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.9em; }
+  ul { padding-left: 1.25rem; }
+</style>
+</head>
+<body>
+
+<h1>Vidsy — Privacy Policy</h1>
+<p class="meta">Last updated: 2026-04-19</p>
+
+<p>Vidsy is a Chrome extension that detects and downloads video and audio streams from web pages. This policy describes what data Vidsy handles and what it does <em>not</em> do.</p>
+
+<h2>Data Vidsy does not collect</h2>
+<p>Vidsy does not collect, transmit, sell, or share any personal information. Specifically, Vidsy does not collect:</p>
+<ul>
+  <li>Personally identifiable information (name, email, address, phone number, identifiers)</li>
+  <li>Health information</li>
+  <li>Financial or payment information</li>
+  <li>Authentication credentials</li>
+  <li>Personal communications</li>
+  <li>Location</li>
+  <li>Browsing or web history</li>
+  <li>Clicks, mouse movements, or other user activity</li>
+  <li>Page content beyond the metadata required to name a download (title, thumbnail, canonical URL)</li>
+</ul>
+
+<h2>Data Vidsy stores locally on your device</h2>
+<p>Vidsy uses <code>chrome.storage.local</code> to persist the following on your machine only. This data never leaves your browser:</p>
+<ul>
+  <li>User preferences (theme, filename template, history retention limit, merge toggles)</li>
+  <li>Download history (title, source URL, file size, timestamp) — retention is user-configurable and can be cleared at any time from the extension options page</li>
+</ul>
+<p>During active downloads, Vidsy writes segment data to the Origin Private File System (OPFS) as scratch space for local WebAssembly remuxing. These scratch files are deleted as soon as the download completes or is cancelled.</p>
+
+<h2>Remote servers</h2>
+<p>Vidsy does not communicate with any server operated by the developer. The only network requests Vidsy makes are:</p>
+<ul>
+  <li>Fetches for the video and audio streams the user explicitly chose to download, sent directly to the origin servers hosting that media</li>
+  <li>Fetches for page metadata (title, og:image) on the page the user is currently viewing</li>
+</ul>
+<p>No analytics, telemetry, crash reporting, or third-party tracking is included.</p>
+
+<h2>Permissions</h2>
+<p>Vidsy's Chrome permissions are documented in the Chrome Web Store listing. Each is scoped to the extension's single purpose: detecting media on the current page and saving downloads to the user's Downloads folder. No permission is used to collect or transmit user data.</p>
+
+<h2>Children</h2>
+<p>Vidsy is not directed at children under 13 and does not knowingly collect data from anyone.</p>
+
+<h2>Changes</h2>
+<p>If this policy changes, the "Last updated" date at the top will change. Material changes will be noted in the extension's release notes.</p>
+
+<h2>Contact</h2>
+<p>Questions: <a href="mailto:sm227465@gmail.com">sm227465@gmail.com</a> or open an issue at <a href="https://github.com/SM227465/Vidsy/issues">github.com/SM227465/Vidsy/issues</a>.</p>
+
+</body>
+</html>
