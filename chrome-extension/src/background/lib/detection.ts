@@ -154,7 +154,14 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
 
   const seenSet = ensureSeenCache(tabId);
   const normalized = normalizeDetection(candidate, tabId, pageUrl);
-  const updatedList = [normalized, ...current].slice(0, 50);
+  // When an HLS/DASH manifest arrives, drop any pre-existing video/audio entries
+  // for this tab — they are almost certainly player-side requests for the same
+  // stream (Instagram, for example, fires progressive-MP4 requests before the MPD).
+  const cleaned =
+    normalized.kind === 'hls' || normalized.kind === 'dash'
+      ? current.filter(item => item.kind !== 'video' && item.kind !== 'audio')
+      : current;
+  const updatedList = [normalized, ...cleaned].slice(0, 50);
   await mediaDetectionsStorage.set({ ...state, [tabKey]: updatedList });
   seenSet?.add(candidate.url);
   if (tabId !== undefined) {
@@ -187,12 +194,7 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
           }
           if (!title) {
             title =
-              document.title.replace(
-                /\s*[-|\u2013\u2014]\s*(YouTube|Vimeo|Pornhub\.com|Pornhub|xHamster|XVideos|RedTube|XNXX|YouPorn|Spankbang|Eporner|Tnaflix|Motherless).*$/i,
-                '',
-              ) ||
-              document.title ||
-              null;
+              document.title.replace(/\s*[-|\u2013\u2014]\s*[^-|\u2013\u2014]{1,40}$/, '') || document.title || null;
           }
           // Decode ALL HTML entities using the browser's native parser (textarea trick)
           if (title && title.includes('&')) {
@@ -384,7 +386,7 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
     }
   }
 
-  // Use actual tab URL (not details.initiator which is just the origin like "https://www.pornhub.org")
+  // Use actual tab URL (details.initiator is only the scheme+host, not the full path).
   let pageUrl = details.initiator;
   if (tabId !== undefined && tabId >= 0) {
     try {

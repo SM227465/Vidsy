@@ -1,4 +1,4 @@
-import { MEDIA_MESSAGE } from '@extension/shared';
+import { MEDIA_MESSAGE, stripTitleSuffix } from '@extension/shared';
 import type { MediaKind } from '@extension/shared';
 
 const sentUrls = new Set<string>();
@@ -102,13 +102,8 @@ const getPageTitle = (): string => {
   const twTitle = document.querySelector<HTMLMetaElement>('meta[name="twitter:title"]')?.content;
   if (twTitle && twTitle.length > 3) return htmlDecode(twTitle);
 
-  // 4. document.title with common suffixes stripped
-  let title = document.title;
-  // Strip common site suffixes: " - YouTube", " | Vimeo", " - Pornhub.com", etc.
-  title = title.replace(
-    /\s*[-|\u2013\u2014]\s*(YouTube|Vimeo|Pornhub\.com|Pornhub|xHamster|XVideos|RedTube|XNXX|YouPorn|XHamster|Spankbang|Eporner|Xvideos|Tnaflix|Motherless|Rule34|Danbooru).*$/i,
-    '',
-  );
+  // 4. document.title with trailing site-name suffix stripped
+  const title = stripTitleSuffix(document.title);
   return htmlDecode(title || document.title);
 };
 
