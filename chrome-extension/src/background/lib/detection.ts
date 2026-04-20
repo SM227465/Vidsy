@@ -154,7 +154,14 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
 
   const seenSet = ensureSeenCache(tabId);
   const normalized = normalizeDetection(candidate, tabId, pageUrl);
-  const updatedList = [normalized, ...current].slice(0, 50);
+  // When an HLS/DASH manifest arrives, drop any pre-existing video/audio entries
+  // for this tab — they are almost certainly player-side requests for the same
+  // stream (Instagram, for example, fires progressive-MP4 requests before the MPD).
+  const cleaned =
+    normalized.kind === 'hls' || normalized.kind === 'dash'
+      ? current.filter(item => item.kind !== 'video' && item.kind !== 'audio')
+      : current;
+  const updatedList = [normalized, ...cleaned].slice(0, 50);
   await mediaDetectionsStorage.set({ ...state, [tabKey]: updatedList });
   seenSet?.add(candidate.url);
   if (tabId !== undefined) {
