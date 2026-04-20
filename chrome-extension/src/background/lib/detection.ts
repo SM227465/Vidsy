@@ -187,12 +187,7 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
           }
           if (!title) {
             title =
-              document.title.replace(
-                /\s*[-|\u2013\u2014]\s*(YouTube|Vimeo|Pornhub\.com|Pornhub|xHamster|XVideos|RedTube|XNXX|YouPorn|Spankbang|Eporner|Tnaflix|Motherless).*$/i,
-                '',
-              ) ||
-              document.title ||
-              null;
+              document.title.replace(/\s*[-|\u2013\u2014]\s*[^-|\u2013\u2014]{1,40}$/, '') || document.title || null;
           }
           // Decode ALL HTML entities using the browser's native parser (textarea trick)
           if (title && title.includes('&')) {
@@ -384,7 +379,7 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
     }
   }
 
-  // Use actual tab URL (not details.initiator which is just the origin like "https://www.pornhub.org")
+  // Use actual tab URL (details.initiator is only the scheme+host, not the full path).
   let pageUrl = details.initiator;
   if (tabId !== undefined && tabId >= 0) {
     try {

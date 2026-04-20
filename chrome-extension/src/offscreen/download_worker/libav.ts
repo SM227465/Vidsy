@@ -66,7 +66,7 @@ export const registerOutputDevice = async (libav: LibAVInstance, opfsName: strin
   console.log(`[libav] writer device ready for ${opfsName}`);
 };
 
-// jsfetch tunables — match VDH's defaults. All are milliseconds.
+// jsfetch tunables — sensible defaults for HLS/DASH fetching. All are milliseconds.
 export type JsFetchOptions = {
   readTimeoutMs?: number;
   fetchTimeoutMs?: number;
