@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import 'webextension-polyfill';
-import { handleNetworkDetection, upsertDetection, clearTabDetections } from './lib/detection';
+import { handleNetworkDetection, upsertDetection, clearTabDetections, setMainVideoPresent } from './lib/detection';
 import { handleDownload, pauseDownload, cancelDownload } from './lib/download';
 import { setupHeaderCapture, cleanupStaleDnrRules } from './lib/header-capture';
 import { deriveKind, deriveFileName } from './lib/media-utils';
@@ -72,6 +72,12 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
     }
     if (msg.type === MEDIA_MESSAGE.CLEAR_DOWNLOADS) {
       await clearTerminalProgress(msg.payload?.keys);
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.MAIN_VIDEO_PRESENT) {
+      const tabId = sender.tab?.id;
+      if (tabId !== undefined) setMainVideoPresent(tabId, msg.payload.present);
       sendResponse({ ok: true });
       return;
     }
