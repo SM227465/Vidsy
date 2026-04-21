@@ -2,7 +2,7 @@ import { Header } from './components/Header';
 import { SettingCard, SettingRow } from './components/SettingCard';
 import { SkeletonFallback, ErrorFallback } from './components/SkeletonFallback';
 import { useMediaPage } from './hooks/useMediaPage';
-import { withErrorBoundary, withSuspense, kindLabel, formatDate } from '@extension/shared';
+import { withErrorBoundary, withSuspense, mediaBadgeLabel, formatDate } from '@extension/shared';
 import { exampleThemeStorage, mediaSettingsStorage } from '@extension/storage';
 import {
   cn,
@@ -270,7 +270,7 @@ const Popup = () => {
                       {item.title ?? item.fileName ?? item.url}
                     </p>
                     <p className={cn('text-[10px]', textMuted)}>
-                      {kindLabel(item.kind)} &middot; {formatDate(item.downloadedAt)}
+                      {mediaBadgeLabel(item)} &middot; {formatDate(item.downloadedAt)}
                     </p>
                   </div>
                 </button>

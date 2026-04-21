@@ -35,7 +35,6 @@ const manifest = {
     'storage',
     'scripting',
     'tabs',
-    'notifications',
     'sidePanel',
     'downloads',
     'webRequest',

@@ -1,6 +1,27 @@
 import type { MediaKind } from '@extension/shared';
 
+// Byte-range query params used by some CDNs (notably fbcdn.net / cdninstagram.com)
+// to slice video delivery. Each chunk is a different URL, causing detection
+// duplicates and unplayable downloads. Stripping them yields the full-file URL.
+const BYTE_RANGE_PARAMS = ['bytestart', 'byteend', 'startoffset', 'endoffset', 'range', 'ranges'];
+
 export const createId = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
+
+export const normalizeMediaUrl = (url: string): string => {
+  try {
+    const parsed = new URL(url);
+    let changed = false;
+    for (const p of BYTE_RANGE_PARAMS) {
+      if (parsed.searchParams.has(p)) {
+        parsed.searchParams.delete(p);
+        changed = true;
+      }
+    }
+    return changed ? parsed.toString() : url;
+  } catch {
+    return url;
+  }
+};
 
 export const getPathExtension = (url: string): string => {
   try {
@@ -152,11 +173,17 @@ export const htmlDecode = (s: string): string => {
     .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
 };
 
-export const sanitizeFileName = (s: string) =>
-  s
-    .replace(/[\\/:*?"<>|]/g, '_')
-    .trim()
-    .slice(0, 180) || 'download';
+export const sanitizeFileName = (s: string) => {
+  const cleaned = s
+    .replace(/[\\/:*?"<>|]/g, '_') // path-illegal chars on Windows/macOS
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f]/g, '') // control chars
+    .replace(/[\u{10000}-\u{10FFFF}]/gu, '') // astral plane (emoji, pictographs) — chrome.downloads rejects these
+    .replace(/\s+/g, ' ') // collapse runs of whitespace
+    .replace(/[. ]+$/, '') // Windows disallows trailing dots/spaces
+    .trim();
+  return cleaned.slice(0, 180) || 'download';
+};
 
 export const GENERIC_MANIFEST_RE =
   /^(master|index|playlist|manifest|video|media|hls|dash|stream|chunklist)(\.[a-z0-9]+)?$/i;

@@ -6,15 +6,60 @@ const sanitizeFileNamePart = (s: string): string =>
     .replace(/\s+/g, ' ')
     .trim();
 
+// Badge answers "what format am I downloading?" (MP4 / WEBM / HLS / DASH / MP3 …)
+// rather than "is this media?". `+A` appended when a separate audio track is
+// paired with a video-only stream (Instagram-style delivery).
+const VIDEO_EXT_LABEL: Record<string, string> = {
+  '.mp4': 'MP4',
+  '.m4v': 'MP4',
+  '.webm': 'WEBM',
+  '.mov': 'MOV',
+  '.mkv': 'MKV',
+  '.flv': 'FLV',
+  '.avi': 'AVI',
+  '.ogv': 'OGV',
+  '.3gp': '3GP',
+  '.wmv': 'WMV',
+};
+const AUDIO_EXT_LABEL: Record<string, string> = {
+  '.mp3': 'MP3',
+  '.aac': 'AAC',
+  '.m4a': 'M4A',
+  '.ogg': 'OGG',
+  '.opus': 'OPUS',
+  '.flac': 'FLAC',
+  '.wav': 'WAV',
+  '.wma': 'WMA',
+};
+
+const pathExtension = (url: string): string => {
+  try {
+    const lastSegment = new URL(url).pathname.split('/').pop() ?? '';
+    const dotIdx = lastSegment.lastIndexOf('.');
+    return dotIdx >= 0 ? lastSegment.slice(dotIdx).toLowerCase() : '';
+  } catch {
+    return '';
+  }
+};
+
 export type DownloadState = { busyUrl: string | null; error: string | null };
 
-export const kindLabel = (k: MediaItem['kind']): string => {
-  if (k === 'hls') return 'HLS';
-  if (k === 'dash') return 'DASH';
-  if (k === 'audio') return 'Audio';
-  if (k === 'video') return 'Video';
-  if (k === 'subtitle') return 'CC';
-  return 'Other';
+export const mediaBadgeLabel = (item: Pick<MediaItem, 'kind' | 'url' | 'mimeType' | 'audioUrl'>): string => {
+  const mime = item.mimeType?.toLowerCase() ?? '';
+  const ext = pathExtension(item.url);
+
+  let base: string;
+  if (item.kind === 'hls') base = 'HLS';
+  else if (item.kind === 'dash') base = 'DASH';
+  else if (item.kind === 'subtitle') base = 'CC';
+  else if (item.kind === 'audio') base = AUDIO_EXT_LABEL[ext] ?? (mime.includes('mp3') ? 'MP3' : 'AUDIO');
+  else if (item.kind === 'video') {
+    base =
+      VIDEO_EXT_LABEL[ext] ??
+      (mime.includes('webm') ? 'WEBM' : mime.includes('mp4') ? 'MP4' : mime.includes('quicktime') ? 'MOV' : 'MP4');
+  } else base = 'FILE';
+
+  return item.kind === 'video' && item.audioUrl ? `${base}+A` : base;
 };
 
 export const kindBadgeColor = (kind: MediaItem['kind'], isLight: boolean): string => {
