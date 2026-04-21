@@ -62,6 +62,30 @@ const hostOf = (url: string): string | null => {
   }
 };
 
+// Find a video-only entry in `list` that looks like the missing half of an
+// adaptive pair (same host, matching duration, no existing audioUrl) for the
+// given `probe`. Returns its index, or -1. Called from both the insert path
+// and the patch path — a network detection arrives without duration, so the
+// pair-merge only becomes possible after the scripting callback patches
+// duration in. Scanning on every patch is cheap (per-tab list is capped at 50).
+const findAdaptiveMateIdx = (
+  list: MediaItem[],
+  probe: { url: string; duration?: number; kind?: MediaItem['kind'] },
+): number => {
+  if (probe.kind !== 'video' || !probe.duration) return -1;
+  const probeHost = hostOf(probe.url);
+  if (!probeHost) return -1;
+  return list.findIndex(
+    item =>
+      item.kind === 'video' &&
+      !item.audioUrl &&
+      item.url !== probe.url &&
+      item.duration &&
+      Math.abs(item.duration - (probe.duration ?? 0)) < 0.5 &&
+      hostOf(item.url) === probeHost,
+  );
+};
+
 const dirKey = (url: string) => {
   try {
     const parsed = new URL(url);
@@ -148,11 +172,29 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
       // Always re-derive fileName from the updated title (regardless of what old fileName looks like)
       patch.fileName = deriveFileName(existing.url, candidate.title);
     }
-    if (Object.keys(patch).length > 0) {
-      const updatedList = [...current];
-      updatedList[existingIdx] = { ...existing, ...patch };
-      await mediaDetectionsStorage.set({ ...state, [tabKey]: updatedList });
+    if (Object.keys(patch).length === 0) return;
+
+    let updatedList = [...current];
+    const patched = { ...existing, ...patch };
+    updatedList[existingIdx] = patched;
+
+    // Duration just became known — re-run pair detection: another same-host
+    // video with the same duration and no audioUrl is the other half of an
+    // adaptive V+A pair. Collapse the later one into the earlier as audioUrl.
+    if (patch.duration && patched.kind === 'video' && !patched.audioUrl) {
+      const mateIdx = findAdaptiveMateIdx(updatedList, patched);
+      if (mateIdx !== -1 && mateIdx !== existingIdx) {
+        // Keep the earlier entry (lower index) as the primary, merge the other as audio
+        const [keepIdx, mergeIdx] = mateIdx < existingIdx ? [mateIdx, existingIdx] : [existingIdx, mateIdx];
+        const primary = updatedList[keepIdx];
+        const secondary = updatedList[mergeIdx];
+        updatedList[keepIdx] = { ...primary, audioUrl: secondary.url, audioMimeType: secondary.mimeType };
+        updatedList = updatedList.filter((_, i) => i !== mergeIdx);
+      }
     }
+
+    await mediaDetectionsStorage.set({ ...state, [tabKey]: updatedList });
+    if (tabId !== undefined) void updateBadge(tabId, updatedList.length);
     return;
   }
 
@@ -168,31 +210,21 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
 
   // Pair-detect Instagram-style adaptive delivery: two MP4 URLs on the same
   // host with matching duration are video-only + audio-only tracks of the
-  // same stream. Collapse the second into the first as audioUrl so the
-  // download path runs the V+A merge instead of saving two broken files.
+  // same stream. This runs on insert when duration is already known; the
+  // network path arrives without duration and is handled by the patch-branch
+  // re-run above once the scripting callback supplies duration.
   if (candidate.kind === 'video' && candidate.mimeType?.startsWith('video/') && candidate.duration) {
-    const candidateHost = hostOf(candidate.url);
-    if (candidateHost) {
-      const mateIdx = current.findIndex(
-        item =>
-          item.kind === 'video' &&
-          !item.audioUrl &&
-          item.url !== candidate.url &&
-          item.duration &&
-          Math.abs(item.duration - (candidate.duration ?? 0)) < 0.5 &&
-          hostOf(item.url) === candidateHost,
-      );
-      if (mateIdx !== -1) {
-        const updatedList = [...current];
-        updatedList[mateIdx] = {
-          ...current[mateIdx],
-          audioUrl: candidate.url,
-          audioMimeType: candidate.mimeType,
-        };
-        await mediaDetectionsStorage.set({ ...state, [tabKey]: updatedList });
-        if (tabId !== undefined) void updateBadge(tabId, updatedList.length);
-        return;
-      }
+    const mateIdx = findAdaptiveMateIdx(current, {
+      url: candidate.url,
+      duration: candidate.duration,
+      kind: candidate.kind,
+    });
+    if (mateIdx !== -1) {
+      const updatedList = [...current];
+      updatedList[mateIdx] = { ...current[mateIdx], audioUrl: candidate.url, audioMimeType: candidate.mimeType };
+      await mediaDetectionsStorage.set({ ...state, [tabKey]: updatedList });
+      if (tabId !== undefined) void updateBadge(tabId, updatedList.length);
+      return;
     }
   }
 
