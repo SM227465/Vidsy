@@ -7,6 +7,7 @@ import {
   documentTitleFromUrl,
   isHlsSegment,
   isDashSegment,
+  normalizeMediaUrl,
   MIN_MEDIA_SIZE_BYTES,
 } from './media-utils';
 import { mediaDetectionsStorage } from '@extension/storage';
@@ -51,6 +52,14 @@ const ensureSeenMasterDirCache = (tabId?: number) => {
     seenHlsMasterDirsByTab.set(tabId, new Set());
   }
   return seenHlsMasterDirsByTab.get(tabId);
+};
+
+const hostOf = (url: string): string | null => {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
 };
 
 const dirKey = (url: string) => {
@@ -103,6 +112,11 @@ const normalizeDetection = (candidate: Partial<MediaItem>, tabId?: number, pageU
 export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: number, pageUrl?: string) => {
   if (!candidate.url) return;
 
+  // Normalize CDN byte-range URLs (e.g. Instagram's ?bytestart=...&byteend=...)
+  // so each chunk of the same video collapses to a single entry and the
+  // download target is the full-file URL.
+  candidate.url = normalizeMediaUrl(candidate.url);
+
   // Convert remote thumbnail URLs to data URLs upfront
   if (candidate.thumbnail && !candidate.thumbnail.startsWith('data:')) {
     const dataUrl = await fetchThumbnailAsDataUrl(candidate.thumbnail);
@@ -150,6 +164,36 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
     current.some(item => item.kind === 'hls' || item.kind === 'dash')
   ) {
     return;
+  }
+
+  // Pair-detect Instagram-style adaptive delivery: two MP4 URLs on the same
+  // host with matching duration are video-only + audio-only tracks of the
+  // same stream. Collapse the second into the first as audioUrl so the
+  // download path runs the V+A merge instead of saving two broken files.
+  if (candidate.kind === 'video' && candidate.mimeType?.startsWith('video/') && candidate.duration) {
+    const candidateHost = hostOf(candidate.url);
+    if (candidateHost) {
+      const mateIdx = current.findIndex(
+        item =>
+          item.kind === 'video' &&
+          !item.audioUrl &&
+          item.url !== candidate.url &&
+          item.duration &&
+          Math.abs(item.duration - (candidate.duration ?? 0)) < 0.5 &&
+          hostOf(item.url) === candidateHost,
+      );
+      if (mateIdx !== -1) {
+        const updatedList = [...current];
+        updatedList[mateIdx] = {
+          ...current[mateIdx],
+          audioUrl: candidate.url,
+          audioMimeType: candidate.mimeType,
+        };
+        await mediaDetectionsStorage.set({ ...state, [tabKey]: updatedList });
+        if (tabId !== undefined) void updateBadge(tabId, updatedList.length);
+        return;
+      }
+    }
   }
 
   const seenSet = ensureSeenCache(tabId);

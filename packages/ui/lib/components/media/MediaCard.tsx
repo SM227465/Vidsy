@@ -131,13 +131,14 @@ export const MediaCard = ({
               <IconVideo />
             </div>
           )}
-          {/* Kind badge */}
+          {/* Kind badge — append "+A" when a companion audio track is paired with this video */}
           <span
             className={cn(
               'absolute left-1.5 top-1.5 rounded-md px-1.5 py-0.5 text-[9px] font-bold uppercase leading-none shadow-sm backdrop-blur-md',
               kindBadgeColor(item.kind, isLight),
             )}>
             {kindLabel(item.kind)}
+            {item.audioUrl && item.kind === 'video' ? '+A' : ''}
           </span>
           {durationStr ? (
             <span className="absolute bottom-1.5 right-1.5 rounded-md bg-black/60 px-1.5 py-0.5 text-[9px] font-semibold tabular-nums text-white backdrop-blur-sm">
