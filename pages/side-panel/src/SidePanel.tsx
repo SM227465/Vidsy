@@ -1,7 +1,7 @@
 import { PanelHeader } from './components/PanelHeader';
 import { SkeletonFallback, ErrorFallback } from './components/SkeletonFallback';
 import { useMediaPage } from './hooks/useMediaPage';
-import { withErrorBoundary, withSuspense, kindLabel, formatDate } from '@extension/shared';
+import { withErrorBoundary, withSuspense, mediaBadgeLabel, formatDate } from '@extension/shared';
 import { mediaSettingsStorage, mediaHistoryStorage, exampleThemeStorage } from '@extension/storage';
 import {
   cn,
@@ -240,7 +240,7 @@ const SidePanel = () => {
                       {item.title ?? item.fileName ?? item.url}
                     </p>
                     <p className={cn('text-[10px]', textMuted)}>
-                      {kindLabel(item.kind)} &middot; {formatDate(item.downloadedAt)}
+                      {mediaBadgeLabel(item)} &middot; {formatDate(item.downloadedAt)}
                     </p>
                   </div>
                 </button>

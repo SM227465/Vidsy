@@ -7,6 +7,7 @@ import {
   documentTitleFromUrl,
   isHlsSegment,
   isDashSegment,
+  normalizeMediaUrl,
   MIN_MEDIA_SIZE_BYTES,
 } from './media-utils';
 import { mediaDetectionsStorage } from '@extension/storage';
@@ -36,6 +37,14 @@ const fetchThumbnailAsDataUrl = async (url: string): Promise<string | null> => {
 
 const seenUrlsByTab = new Map<number, Set<string>>();
 const seenHlsMasterDirsByTab = new Map<number, Set<string>>();
+// Tabs where a content script has seen a rendered <video>/<audio> element
+// above the "main player" size threshold. Used to gate network-sourced
+// progressive video/audio detections: listing pages (Instagram saved-posts
+// grid, TikTok feeds) preload post MP4s but have no active player, so
+// dropping those detections avoids a flood of phantom entries. HLS/DASH
+// manifests still pass through — they're valuable even without a visible
+// player and rare on listing pages.
+const tabsWithMainVideo = new Set<number>();
 
 const ensureSeenCache = (tabId?: number) => {
   if (tabId === undefined) return undefined;
@@ -53,6 +62,38 @@ const ensureSeenMasterDirCache = (tabId?: number) => {
   return seenHlsMasterDirsByTab.get(tabId);
 };
 
+const hostOf = (url: string): string | null => {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+};
+
+// Find a video-only entry in `list` that looks like the missing half of an
+// adaptive pair (same host, matching duration, no existing audioUrl) for the
+// given `probe`. Returns its index, or -1. Called from both the insert path
+// and the patch path — a network detection arrives without duration, so the
+// pair-merge only becomes possible after the scripting callback patches
+// duration in. Scanning on every patch is cheap (per-tab list is capped at 50).
+const findAdaptiveMateIdx = (
+  list: MediaItem[],
+  probe: { url: string; duration?: number; kind?: MediaItem['kind'] },
+): number => {
+  if (probe.kind !== 'video' || !probe.duration) return -1;
+  const probeHost = hostOf(probe.url);
+  if (!probeHost) return -1;
+  return list.findIndex(
+    item =>
+      item.kind === 'video' &&
+      !item.audioUrl &&
+      item.url !== probe.url &&
+      item.duration &&
+      Math.abs(item.duration - (probe.duration ?? 0)) < 0.5 &&
+      hostOf(item.url) === probeHost,
+  );
+};
+
 const dirKey = (url: string) => {
   try {
     const parsed = new URL(url);
@@ -64,7 +105,7 @@ const dirKey = (url: string) => {
   }
 };
 
-const updateBadge = async (tabId: number, count: number) => {
+const writeBadge = async (tabId: number, count: number) => {
   const text = count > 0 ? String(count) : '';
   try {
     await chrome.action.setBadgeText({ text, tabId });
@@ -74,6 +115,70 @@ const updateBadge = async (tabId: number, count: number) => {
   } catch {
     // tab may no longer exist
   }
+};
+
+// Debounced per-tab badge updates. Instagram (and other adaptive sites)
+// fire a burst of MP4 requests that we dedupe as durations arrive — without
+// this, the badge flickers 1→2→1→2 during the settling window. 500ms gives
+// the scripting.executeScript duration callback time to arrive on slower
+// pages before the badge commits.
+const BADGE_DEBOUNCE_MS = 500;
+const badgeTimers = new Map<number, ReturnType<typeof setTimeout>>();
+const badgePending = new Map<number, number>();
+
+const updateBadge = (tabId: number, count: number) => {
+  badgePending.set(tabId, count);
+  const existing = badgeTimers.get(tabId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    const finalCount = badgePending.get(tabId) ?? 0;
+    badgeTimers.delete(tabId);
+    badgePending.delete(tabId);
+    void writeBadge(tabId, finalCount);
+  }, BADGE_DEBOUNCE_MS);
+  badgeTimers.set(tabId, timer);
+};
+
+// Debounced per-tab storage writes. The popup/side-panel re-renders on
+// every storage change, so writing on each upsert-or-dedupe step produces
+// visible flicker during the same settling window that affects the badge.
+// In-memory cache is the source of truth until the flush timer fires; reads
+// go through it so subsequent upserts within the window see the latest.
+// Matches badge debounce so content-UI and badge commit together.
+const TAB_WRITE_DEBOUNCE_MS = 500;
+const pendingTabItems = new Map<string, MediaItem[]>();
+const tabWriteTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+const flushTabItems = async (tabKey: string) => {
+  const items = pendingTabItems.get(tabKey);
+  if (items === undefined) return;
+  pendingTabItems.delete(tabKey);
+  tabWriteTimers.delete(tabKey);
+  const state = await mediaDetectionsStorage.get();
+  await mediaDetectionsStorage.set({ ...state, [tabKey]: items });
+};
+
+const scheduleTabWrite = (tabKey: string) => {
+  const existing = tabWriteTimers.get(tabKey);
+  if (existing) clearTimeout(existing);
+  tabWriteTimers.set(
+    tabKey,
+    setTimeout(() => {
+      void flushTabItems(tabKey);
+    }, TAB_WRITE_DEBOUNCE_MS),
+  );
+};
+
+const getTabItems = async (tabKey: string): Promise<MediaItem[]> => {
+  const pending = pendingTabItems.get(tabKey);
+  if (pending) return pending;
+  const state = await mediaDetectionsStorage.get();
+  return state[tabKey] ?? [];
+};
+
+const setTabItems = (tabKey: string, items: MediaItem[]) => {
+  pendingTabItems.set(tabKey, items);
+  scheduleTabWrite(tabKey);
 };
 
 const normalizeDetection = (candidate: Partial<MediaItem>, tabId?: number, pageUrl?: string): MediaItem => {
@@ -103,15 +208,19 @@ const normalizeDetection = (candidate: Partial<MediaItem>, tabId?: number, pageU
 export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: number, pageUrl?: string) => {
   if (!candidate.url) return;
 
+  // Normalize CDN byte-range URLs (e.g. Instagram's ?bytestart=...&byteend=...)
+  // so each chunk of the same video collapses to a single entry and the
+  // download target is the full-file URL.
+  candidate.url = normalizeMediaUrl(candidate.url);
+
   // Convert remote thumbnail URLs to data URLs upfront
   if (candidate.thumbnail && !candidate.thumbnail.startsWith('data:')) {
     const dataUrl = await fetchThumbnailAsDataUrl(candidate.thumbnail);
     candidate.thumbnail = dataUrl ?? undefined;
   }
 
-  const state = await mediaDetectionsStorage.get();
   const tabKey = tabId !== undefined ? String(tabId) : 'unknown';
-  const current = state[tabKey] ?? [];
+  const current = await getTabItems(tabKey);
   const existingIdx = current.findIndex(item => item.url === candidate.url);
 
   if (existingIdx !== -1) {
@@ -134,11 +243,62 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
       // Always re-derive fileName from the updated title (regardless of what old fileName looks like)
       patch.fileName = deriveFileName(existing.url, candidate.title);
     }
-    if (Object.keys(patch).length > 0) {
-      const updatedList = [...current];
-      updatedList[existingIdx] = { ...existing, ...patch };
-      await mediaDetectionsStorage.set({ ...state, [tabKey]: updatedList });
+    if (Object.keys(patch).length === 0) return;
+
+    let updatedList = [...current];
+    const patched = { ...existing, ...patch };
+    updatedList[existingIdx] = patched;
+
+    // Duration just became known — handle adaptive-stream dedup. Instagram
+    // serves 3+ MP4s per post (multiple video qualities + one audio), all
+    // inserted into storage without duration. Once duration lands here:
+    //   a) If an already-paired sibling exists (same host+duration, has
+    //      audioUrl), the patched item is a redundant quality variant — drop
+    //      it. This covers patches that fire AFTER another merge completed.
+    //   b) Otherwise, look for a standalone same-host+same-duration mate and
+    //      pair them; then drop any other unpaired siblings we collect.
+    if (patch.duration && patched.kind === 'video' && !patched.audioUrl) {
+      const probeHost = hostOf(patched.url);
+      const probeDur = patched.duration;
+      const pairedSiblingExists = updatedList.some(
+        (it, i) =>
+          i !== existingIdx &&
+          it.kind === 'video' &&
+          it.audioUrl &&
+          it.duration &&
+          probeDur &&
+          Math.abs(it.duration - probeDur) < 0.5 &&
+          hostOf(it.url) === probeHost,
+      );
+      if (pairedSiblingExists) {
+        updatedList = updatedList.filter((_, i) => i !== existingIdx);
+      } else {
+        const mateIdx = findAdaptiveMateIdx(updatedList, patched);
+        if (mateIdx !== -1 && mateIdx !== existingIdx) {
+          const [keepIdx, mergeIdx] = mateIdx < existingIdx ? [mateIdx, existingIdx] : [existingIdx, mateIdx];
+          const primary = updatedList[keepIdx];
+          const secondary = updatedList[mergeIdx];
+          const merged = { ...primary, audioUrl: secondary.url, audioMimeType: secondary.mimeType };
+          const keepHost = hostOf(merged.url);
+          const keepDur = merged.duration;
+          updatedList = updatedList
+            .filter((_, i) => i !== mergeIdx)
+            .filter(it => {
+              if (it.url === merged.url) return true;
+              if (it.kind !== 'video' || it.audioUrl) return true;
+              if (!it.duration || !keepDur) return true;
+              if (Math.abs(it.duration - keepDur) >= 0.5) return true;
+              if (hostOf(it.url) !== keepHost) return true;
+              return false;
+            });
+          const finalKeepIdx = updatedList.findIndex(it => it.url === merged.url);
+          if (finalKeepIdx !== -1) updatedList[finalKeepIdx] = merged;
+        }
+      }
     }
+
+    setTabItems(tabKey, updatedList);
+    if (tabId !== undefined) updateBadge(tabId, updatedList.length);
     return;
   }
 
@@ -152,13 +312,40 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
     return;
   }
 
+  // Pair-detect Instagram-style adaptive delivery: two MP4 URLs on the same
+  // host with matching duration are video-only + audio-only tracks of the
+  // same stream. This runs on insert when duration is already known; the
+  // network path arrives without duration and is handled by the patch-branch
+  // re-run above once the scripting callback supplies duration.
+  if (candidate.kind === 'video' && candidate.mimeType?.startsWith('video/') && candidate.duration) {
+    const mateIdx = findAdaptiveMateIdx(current, {
+      url: candidate.url,
+      duration: candidate.duration,
+      kind: candidate.kind,
+    });
+    if (mateIdx !== -1) {
+      const updatedList = [...current];
+      updatedList[mateIdx] = { ...current[mateIdx], audioUrl: candidate.url, audioMimeType: candidate.mimeType };
+      setTabItems(tabKey, updatedList);
+      if (tabId !== undefined) updateBadge(tabId, updatedList.length);
+      return;
+    }
+  }
+
   const seenSet = ensureSeenCache(tabId);
   const normalized = normalizeDetection(candidate, tabId, pageUrl);
-  const updatedList = [normalized, ...current].slice(0, 50);
-  await mediaDetectionsStorage.set({ ...state, [tabKey]: updatedList });
+  // When an HLS/DASH manifest arrives, drop any pre-existing video/audio entries
+  // for this tab — they are almost certainly player-side requests for the same
+  // stream (Instagram, for example, fires progressive-MP4 requests before the MPD).
+  const cleaned =
+    normalized.kind === 'hls' || normalized.kind === 'dash'
+      ? current.filter(item => item.kind !== 'video' && item.kind !== 'audio')
+      : current;
+  const updatedList = [normalized, ...cleaned].slice(0, 50);
+  setTabItems(tabKey, updatedList);
   seenSet?.add(candidate.url);
   if (tabId !== undefined) {
-    void updateBadge(tabId, updatedList.length);
+    updateBadge(tabId, updatedList.length);
     // Grab title, duration, and thumbnail from the tab via scripting
     chrome.scripting
       .executeScript({
@@ -187,12 +374,7 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
           }
           if (!title) {
             title =
-              document.title.replace(
-                /\s*[-|\u2013\u2014]\s*(YouTube|Vimeo|Pornhub\.com|Pornhub|xHamster|XVideos|RedTube|XNXX|YouPorn|Spankbang|Eporner|Tnaflix|Motherless).*$/i,
-                '',
-              ) ||
-              document.title ||
-              null;
+              document.title.replace(/\s*[-|\u2013\u2014]\s*[^-|\u2013\u2014]{1,40}$/, '') || document.title || null;
           }
           // Decode ALL HTML entities using the browser's native parser (textarea trick)
           if (title && title.includes('&')) {
@@ -267,15 +449,29 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
 };
 
 export const clearTabDetections = async (tabId: number) => {
-  const state = await mediaDetectionsStorage.get();
   const tabKey = String(tabId);
-  if (!state[tabKey]) return;
-  const next = { ...state };
-  delete next[tabKey];
-  await mediaDetectionsStorage.set(next);
+  const pendingWrite = tabWriteTimers.get(tabKey);
+  if (pendingWrite) {
+    clearTimeout(pendingWrite);
+    tabWriteTimers.delete(tabKey);
+  }
+  pendingTabItems.delete(tabKey);
+  const state = await mediaDetectionsStorage.get();
+  if (state[tabKey]) {
+    const next = { ...state };
+    delete next[tabKey];
+    await mediaDetectionsStorage.set(next);
+  }
   seenUrlsByTab.delete(tabId);
   seenHlsMasterDirsByTab.delete(tabId);
-  void updateBadge(tabId, 0);
+  tabsWithMainVideo.delete(tabId);
+  const pendingBadge = badgeTimers.get(tabId);
+  if (pendingBadge) {
+    clearTimeout(pendingBadge);
+    badgeTimers.delete(tabId);
+    badgePending.delete(tabId);
+  }
+  void writeBadge(tabId, 0);
 };
 
 export const handleNetworkDetection = async (details: chrome.webRequest.WebResponseHeadersDetails) => {
@@ -336,6 +532,15 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
     return;
   }
 
+  // Listing-page gate: progressive video/audio requests on a tab with no
+  // rendered main-video element are preloads (Instagram saved-posts grid,
+  // TikTok feed, YouTube homepage) — not something the user is watching.
+  // Manifests (HLS/DASH) bypass the gate: they're the primary artifact and
+  // rarely fire on listing pages.
+  if ((kind === 'video' || kind === 'audio') && tabId !== undefined && tabId >= 0 && !tabsWithMainVideo.has(tabId)) {
+    return;
+  }
+
   let variants: MediaVariant[] | undefined;
   let isDrmProtected = false;
   if (kind === 'hls') {
@@ -384,7 +589,7 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
     }
   }
 
-  // Use actual tab URL (not details.initiator which is just the origin like "https://www.pornhub.org")
+  // Use actual tab URL (details.initiator is only the scheme+host, not the full path).
   let pageUrl = details.initiator;
   if (tabId !== undefined && tabId >= 0) {
     try {
@@ -409,3 +614,10 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
     pageUrl,
   );
 };
+
+export const setMainVideoPresent = (tabId: number, present: boolean) => {
+  if (present) tabsWithMainVideo.add(tabId);
+  else tabsWithMainVideo.delete(tabId);
+};
+
+export const hasMainVideo = (tabId: number) => tabsWithMainVideo.has(tabId);

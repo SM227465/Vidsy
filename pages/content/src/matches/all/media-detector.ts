@@ -1,7 +1,35 @@
-import { MEDIA_MESSAGE } from '@extension/shared';
+import { MEDIA_MESSAGE, stripTitleSuffix } from '@extension/shared';
 import type { MediaKind } from '@extension/shared';
 
 const sentUrls = new Set<string>();
+
+// Presence of a rendered main-video element. Gates background network
+// detections so listing pages (Instagram grid, feeds) don't flood the UI
+// with phantom preloads. Only sent on transitions to keep the channel quiet.
+let lastMainVideoPresent: boolean | null = null;
+
+const publishMainVideoPresence = (present: boolean) => {
+  if (present === lastMainVideoPresent) return;
+  lastMainVideoPresent = present;
+  chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.MAIN_VIDEO_PRESENT, payload: { present } }).catch(() => undefined);
+};
+
+const MAIN_VIDEO_MIN_W = 300;
+const MAIN_VIDEO_MIN_H = 200;
+
+const scanMainVideoPresence = () => {
+  const elements = document.querySelectorAll<HTMLVideoElement>('video');
+  for (const v of Array.from(elements)) {
+    const rect = v.getBoundingClientRect();
+    const style = window.getComputedStyle(v);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+    if (rect.width >= MAIN_VIDEO_MIN_W && rect.height >= MAIN_VIDEO_MIN_H) {
+      publishMainVideoPresence(true);
+      return;
+    }
+  }
+  publishMainVideoPresence(false);
+};
 
 /** Decode ALL HTML entities using the browser's native parser.
  *  Handles &period; → .  &amp; → &  &lpar; → (  &#123; → {  etc. */
@@ -102,13 +130,8 @@ const getPageTitle = (): string => {
   const twTitle = document.querySelector<HTMLMetaElement>('meta[name="twitter:title"]')?.content;
   if (twTitle && twTitle.length > 3) return htmlDecode(twTitle);
 
-  // 4. document.title with common suffixes stripped
-  let title = document.title;
-  // Strip common site suffixes: " - YouTube", " | Vimeo", " - Pornhub.com", etc.
-  title = title.replace(
-    /\s*[-|\u2013\u2014]\s*(YouTube|Vimeo|Pornhub\.com|Pornhub|xHamster|XVideos|RedTube|XNXX|YouPorn|XHamster|Spankbang|Eporner|Xvideos|Tnaflix|Motherless|Rule34|Danbooru).*$/i,
-    '',
-  );
+  // 4. document.title with trailing site-name suffix stripped
+  const title = stripTitleSuffix(document.title);
   return htmlDecode(title || document.title);
 };
 
@@ -250,10 +273,14 @@ const handleMutations = (mutations: MutationRecord[]) => {
       registerElement(mutation.target);
     }
   }
+  // Cheap to rescan — the DOM just changed and a video may have mounted
+  // (Instagram single-post navigation replaces the player in-place).
+  scanMainVideoPresence();
 };
 
 export const initMediaDetector = () => {
   document.querySelectorAll<HTMLMediaElement>('video, audio').forEach(registerElement);
+  scanMainVideoPresence();
 
   const observer = new MutationObserver(handleMutations);
   observer.observe(document.documentElement, {
@@ -263,7 +290,12 @@ export const initMediaDetector = () => {
     attributeFilter: ['src'],
   });
 
+  // Rescan on resize — elements can grow past the main-video threshold when
+  // the player enters fullscreen or layout reflows.
+  window.addEventListener('resize', scanMainVideoPresence, { passive: true });
+
   window.addEventListener('pagehide', () => {
+    publishMainVideoPresence(false);
     chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.CLEAR_TAB }).catch(() => undefined);
   });
 };

@@ -17,15 +17,23 @@ const extFromMime = (mime: string | undefined, fallback: string): string => {
 const opfsNameFor = (key: string, tag: string, ext: string): string =>
   `merged-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}-${tag}-${Date.now().toString(36)}${ext}`;
 
+// Let libav pick whichever input carries video vs. audio rather than
+// assuming input 0 = video, input 1 = audio. Some sites (Instagram) serve
+// adaptive media as two MP4 URLs with arbitrary track ordering, so the
+// order in which we detected them is not reliable.
 const twoInputCopyArgs = (videoUrl: string, audioUrl: string, output: string): string[] => [
   '-i',
   videoUrl,
   '-i',
   audioUrl,
   '-map',
-  '0:v:0',
+  '0:v?',
   '-map',
-  '1:a:0?',
+  '1:v?',
+  '-map',
+  '0:a?',
+  '-map',
+  '1:a?',
   '-c',
   'copy',
   '-y',

@@ -1,7 +1,7 @@
 // Globals that libav.js's jsfetch protocol expects on the worker scope.
 // The upstream libav.js wrapper registers these before bootstrapping the
 // WASM module; we load the emscripten module directly, so we install them
-// by hand. Signatures and retry behaviour match VDH's implementation — the
+// by hand. Signatures and retry behaviour match a reference implementation — the
 // WASM side is compiled against them and any deviation crashes silently
 // inside the asyncify trampoline (e.g. "ReferenceError: MutateUrl is not
 // defined" stalls the mux with no user-visible error).
