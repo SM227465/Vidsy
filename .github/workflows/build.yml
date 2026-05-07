@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    name: Build extension and publish pre-release
+    name: Build extension and publish release
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -15,49 +15,55 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read version + check if release already exists
+        id: version
+        run: |
+          v=$(node -p "require('./package.json').version")
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+          if git ls-remote --tags origin "refs/tags/v$v" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v$v already exists — skipping release"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: pnpm/action-setup@v4
+        if: steps.version.outputs.exists == 'false'
 
       - uses: actions/setup-node@v4
+        if: steps.version.outputs.exists == 'false'
         with:
           node-version-file: '.nvmrc'
           cache: pnpm
 
       - name: Install dependencies
+        if: steps.version.outputs.exists == 'false'
         run: pnpm install --frozen-lockfile --prefer-offline
 
       - name: Build extension
+        if: steps.version.outputs.exists == 'false'
         run: pnpm build
 
-      - name: Read version from package.json
-        id: version
-        run: echo "value=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
-
-      - name: Get short SHA
-        id: sha
-        run: echo "short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
       - name: Zip dist folder
+        if: steps.version.outputs.exists == 'false'
         run: |
           cd dist
-          zip -r ../Vidsy-v${{ steps.version.outputs.value }}-${{ steps.sha.outputs.short }}.zip .
+          zip -r ../Vidsy-v${{ steps.version.outputs.value }}.zip .
           cd ..
 
-      - name: Create pre-release with artifact
+      - name: Create release with artifact
+        if: steps.version.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: dev-v${{ steps.version.outputs.value }}-${{ steps.sha.outputs.short }}
-          name: "Dev Build v${{ steps.version.outputs.value }} (${{ steps.sha.outputs.short }})"
+          tag_name: v${{ steps.version.outputs.value }}
+          name: Release v${{ steps.version.outputs.value }}
           body: |
-            **Automated development build**
+            **Build for v${{ steps.version.outputs.value }}**
 
-            Version: `${{ steps.version.outputs.value }}`
             Commit: `${{ github.sha }}`
-            Branch: `main`
             Triggered by: ${{ github.actor }}
 
-            > Pre-release built from the `main` branch. Each build is preserved as its own release.
-            > Install by loading the zip as an unpacked extension in Chrome.
-          prerelease: true
-          files: Vidsy-v${{ steps.version.outputs.value }}-${{ steps.sha.outputs.short }}.zip
+            Install by loading the zip as an unpacked extension in Chrome.
+          files: Vidsy-v${{ steps.version.outputs.value }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
