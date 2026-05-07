@@ -31,11 +31,15 @@ jobs:
         run: echo "path=$(ls dist-zip/extension-*.zip | head -1)" >> "$GITHUB_OUTPUT"
 
       - name: Install upload-script deps
-        run: npm install --no-save google-auth-library@10
+        # Run inside .github/scripts so npm doesn't trip over pnpm's
+        # node_modules layout in the repo root.
+        working-directory: .github/scripts
+        run: npm install --no-package-lock
 
       - name: Upload to Chrome Web Store
+        working-directory: .github/scripts
         env:
           CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
           CWS_SERVICE_ACCOUNT_JSON: ${{ secrets.CWS_SERVICE_ACCOUNT_JSON }}
-          ZIP_PATH: ${{ steps.zip.outputs.path }}
-        run: node .github/scripts/cws-upload.mjs
+          ZIP_PATH: ${{ github.workspace }}/${{ steps.zip.outputs.path }}
+        run: node cws-upload.mjs
