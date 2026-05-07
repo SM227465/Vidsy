@@ -1,4 +1,4 @@
-name: Chrome Web Store - Upload Draft
+name: Chrome Web Store - Publish
 
 on:
   push:
@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  upload:
-    name: Build and upload zip as draft
+  publish:
+    name: Build, upload, and submit for review
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
         working-directory: .github/scripts
         run: npm install --no-package-lock
 
-      - name: Upload to Chrome Web Store
+      - name: Upload + submit for review
         working-directory: .github/scripts
         env:
           CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
