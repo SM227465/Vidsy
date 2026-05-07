@@ -1,11 +1,12 @@
+import { DropdownPanel } from './components/DropdownPanel';
+import { PillBar } from './components/PillBar';
+import { FONT } from './components/tokens';
+import { ACTIVE_STAGES, pickBestVariant, qLabel, buildRows } from './lib/media-helpers';
 import { MEDIA_MESSAGE, useStorage } from '@extension/shared';
 import { mediaDetectionsStorage, mediaDownloadsStorage, mediaSettingsStorage } from '@extension/storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { VideoEntry } from './lib/media-helpers';
 import type { MediaDownloadProgress, MediaItem } from '@extension/shared';
-import { VideoEntry, ACTIVE_STAGES, pickBestVariant, qLabel, kindStr, buildRows } from './lib/media-helpers';
-import { FONT } from './components/tokens';
-import { PillBar } from './components/PillBar';
-import { DropdownPanel } from './components/DropdownPanel';
 
 const App = () => {
   const detections = useStorage(mediaDetectionsStorage);
@@ -165,10 +166,9 @@ const App = () => {
     MIN_H = 160;
   const mainVideo = videos
     .filter(v => v.rect.width >= MIN_W && v.rect.height >= MIN_H)
-    .reduce<VideoEntry | undefined>(
-      (b, c) => (!b ? c : c.rect.width * c.rect.height > b.rect.width * b.rect.height ? c : b),
-      undefined,
-    );
+    .reduce<
+      VideoEntry | undefined
+    >((b, c) => (!b ? c : c.rect.width * c.rect.height > b.rect.width * b.rect.height ? c : b), undefined);
 
   /* Hysteresis */
   let effectiveVideo = mainVideo;
@@ -200,8 +200,8 @@ const App = () => {
     'fetch-manifest': 'Downloading…',
     'download-video': 'Downloading…',
     'download-audio': 'Downloading…',
-    mux: 'Downloading…',
-    finalize: 'Downloading…',
+    mux: 'Muxing…',
+    finalize: 'Muxing…',
     success: '✓ Done',
     failed: '✗ Failed',
   };

@@ -8,7 +8,7 @@ import type { LibAVFactory, LibAVInstance } from './libav-types';
 
 // Dedicated workers don't expose `chrome.*`, so resolve every extension URL
 // relative to the worker script's own location (chrome-extension://<id>/download_worker/main.js).
-const LIBAV_MJS_URL = new URL('../libav/libav-6.5.7.1-h264-aac-mp3.wasm.mjs', self.location.href).href;
+const LIBAV_MJS_URL = new URL('../libav/libav-6.8.8.0-h264-aac-mp3.wasm.mjs', self.location.href).href;
 const LIBAV_BASE_URL = new URL('../libav/', self.location.href).href;
 
 installLibAVGlobals();
