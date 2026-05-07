@@ -1,0 +1,41 @@
+name: Chrome Web Store - Upload Draft
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  upload:
+    name: Build and upload zip as draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Build + zip
+        run: pnpm zip
+
+      - name: Resolve zip path
+        id: zip
+        run: echo "path=$(ls dist-zip/extension-*.zip | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Install upload-script deps
+        run: npm install --no-save google-auth-library@10
+
+      - name: Upload to Chrome Web Store
+        env:
+          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+          CWS_SERVICE_ACCOUNT_JSON: ${{ secrets.CWS_SERVICE_ACCOUNT_JSON }}
+          ZIP_PATH: ${{ steps.zip.outputs.path }}
+        run: node .github/scripts/cws-upload.mjs
