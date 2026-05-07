@@ -1,7 +1,7 @@
 # Third-party components bundled in this extension
 
-The files `libav-6.5.7.1-h264-aac-mp3.wasm.wasm` and
-`libav-6.5.7.1-h264-aac-mp3.wasm.mjs` in this directory are an unmodified
+The files `libav-6.8.8.0-h264-aac-mp3.wasm.wasm` and
+`libav-6.8.8.0-h264-aac-mp3.wasm.mjs` in this directory are an unmodified
 redistribution of a prebuilt WebAssembly artifact that bundles the following
 components:
 
@@ -17,10 +17,10 @@ components:
   Upstream: https://lame.sourceforge.io/
   Source: https://lame.sourceforge.io/download.php
 
-- **libav.js** (compilation toolchain + JS glue; Yahweasel/libav.js 6.5.7.1)
+- **libav.js** (compilation toolchain + JS glue; Yahweasel/libav.js 6.8.8.0)
   — 2-Clause BSD (glue) / LGPL-2.1 (bundled FFmpeg).
   Upstream: https://github.com/Yahweasel/libav.js
-  Source: https://github.com/Yahweasel/libav.js/tree/v6.5.7.1
+  Source: https://github.com/Yahweasel/libav.js/tree/v6.8.8.0
 
 ## License
 
@@ -54,6 +54,9 @@ active patent claims apply to libmp3lame redistribution at this time.
 ## How to rebuild
 
 To produce a replacement artifact, check out
-https://github.com/Yahweasel/libav.js at tag `v6.5.7.1` and build the
-`h264-aac-mp3` variant per the project's README. Drop the resulting
-`.wasm.wasm` + `.wasm.mjs` into this directory.
+https://github.com/Yahweasel/libav.js at tag `v6.8.8.0` and build the
+`h264-aac-mp3` variant per the project's README. The variant configuration
+adds HLS demuxing (`format-hls`), the libav-side fetch protocol
+(`protocol-jsfetch`), and the H.264 MP4-to-Annex-B bitstream filter
+(`bsf-h264_mp4toannexb`) on top of the base h264+aac+mp3 components.
+Drop the resulting `.wasm.wasm` + `.wasm.mjs` into this directory.
