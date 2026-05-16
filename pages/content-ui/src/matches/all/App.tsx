@@ -103,6 +103,9 @@ const App = () => {
   /* download helpers */
   const doDownload = useCallback(
     async (item: MediaItem, variantUrl?: string) => {
+      // MSE-fed players have no fetchable source — the badge still shows so the
+      // user knows we saw the video, but the action is a no-op.
+      if (item.kind === 'mse') return;
       const url = variantUrl ?? item.url;
       setBusyUrl(item.url);
       setOpen(false);
@@ -188,20 +191,24 @@ const App = () => {
   const prog = activeItem ? (downloads[activeItem.url] ?? null) : null;
 
   /* percentage calc */
-  const pct =
-    prog?.stage === 'mux' && prog.muxPercent !== undefined
-      ? prog.muxPercent
-      : prog?.estimatedBytes
-        ? Math.min(100, Math.round((prog.downloadedBytes / prog.estimatedBytes) * 100))
-        : null;
+  // mux/finalize stages run after byte download is 100%. If the libav build
+  // exposes ffmpeg_get_out_time_ms (it doesn't currently), muxPercent is set
+  // and we show it. Otherwise pct is null → the pill renders an indeterminate
+  // spinner instead of a stale "100%" that looks stuck.
+  const isMuxing = prog?.stage === 'mux' || prog?.stage === 'finalize';
+  const pct = isMuxing
+    ? (prog?.muxPercent ?? null)
+    : prog?.estimatedBytes
+      ? Math.min(100, Math.round((prog.downloadedBytes / prog.estimatedBytes) * 100))
+      : null;
 
   const stageShort: Record<string, string> = {
     init: 'Downloading…',
     'fetch-manifest': 'Downloading…',
     'download-video': 'Downloading…',
     'download-audio': 'Downloading…',
-    mux: 'Muxing…',
-    finalize: 'Muxing…',
+    mux: 'Processing…',
+    finalize: 'Saving…',
     success: '✓ Done',
     failed: '✗ Failed',
   };

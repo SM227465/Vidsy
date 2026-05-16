@@ -7,6 +7,26 @@ Looking for a powerful **video downloader extension** for Chrome? **Vidsy** is a
 
 Built on [Chrome Extension Boilerplate with React + Vite + TypeScript](https://github.com/Jonghakseo/chrome-extension-boilerplate-react-vite).
 
+## Install
+
+### From Chrome Web Store (recommended)
+
+Install with one click:
+
+**[Vidsy on the Chrome Web Store](https://chromewebstore.google.com/detail/vidsy/kpaipljgcidaeajchdaignokjaggkmfh)**
+
+Works in Chrome, Edge, Brave, and any other Chromium-based browser.
+
+### Manual install (load unpacked)
+
+For early access to fixes or for development testing:
+
+1. Download the latest build zip from the [Releases page](https://github.com/SM227465/Vidsy/releases/latest), or build locally with `pnpm install && pnpm zip` (outputs `dist-zip/`).
+2. Unzip the archive somewhere stable (the extension reads files from this directory at runtime — don't delete it after loading).
+3. Open `chrome://extensions` in your browser.
+4. Toggle **Developer mode** on (top-right corner).
+5. Click **Load unpacked** and select the unzipped folder.
+
 ## Features
 
 - **Automatic media detection** via network request monitoring (`webRequest` API)

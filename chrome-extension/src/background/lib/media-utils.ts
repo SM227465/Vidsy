@@ -54,6 +54,12 @@ export const deriveKind = (url: string, mime?: string): MediaKind => {
   if (ext === '.mpd') {
     return 'dash';
   }
+  if (normalizedMime.includes('application/vnd.ms-sstr+xml')) {
+    return 'mss';
+  }
+  if (/\.ism\/manifest(\?|$)/i.test(url)) {
+    return 'mss';
+  }
   if (
     normalizedMime.startsWith('text/vtt') ||
     normalizedMime.includes('application/ttml+xml') ||

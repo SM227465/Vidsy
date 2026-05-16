@@ -471,7 +471,6 @@ const SidePanel = () => {
                 startEdit={startEdit}
                 copyUrl={copyUrl}
                 onDismiss={clearTabDetections}
-                textMuted={textMuted}
               />
             ))}
           </div>

@@ -23,23 +23,28 @@ export const DownloadProgress = ({ progress, isLight }: { progress: MediaDownloa
   }, [progress.downloadedBytes]);
 
   const isMuxing = progress.stage === 'mux';
+  const isFinalizing = progress.stage === 'finalize';
   const isFailed = progress.stage === 'failed';
   const isCancelled = progress.stage === 'cancelled';
   const isActive = !isFailed && !isCancelled;
+  const isPostDownload = isMuxing || isFinalizing;
 
-  const pct =
-    isMuxing && progress.muxPercent !== undefined
-      ? progress.muxPercent
-      : progress.estimatedBytes
-        ? Math.min(100, Math.round((progress.downloadedBytes / progress.estimatedBytes) * 100))
-        : undefined;
+  // Once we're past byte download (mux/finalize), only show a real percent if
+  // muxPercent is reported (current libav build doesn't). Otherwise pct stays
+  // undefined → bar renders as indeterminate so the user sees "processing"
+  // instead of a stale 100% that looks frozen.
+  const pct = isPostDownload
+    ? progress.muxPercent
+    : progress.estimatedBytes
+      ? Math.min(100, Math.round((progress.downloadedBytes / progress.estimatedBytes) * 100))
+      : undefined;
 
   const barColor =
     isFailed || isCancelled
       ? isLight
         ? 'bg-red-400'
         : 'bg-red-500'
-      : isMuxing
+      : isPostDownload
         ? isLight
           ? 'bg-amber-400'
           : 'bg-amber-500'
@@ -51,13 +56,15 @@ export const DownloadProgress = ({ progress, isLight }: { progress: MediaDownloa
       ? progress.error.slice(0, 30)
       : isMuxing
         ? pct !== undefined
-          ? `Muxing ${pct}%`
-          : 'Muxing...'
-        : pct !== undefined
-          ? `${pct}%`
-          : progress.stage;
+          ? `Processing ${pct}%`
+          : 'Processing...'
+        : isFinalizing
+          ? 'Saving...'
+          : pct !== undefined
+            ? `${pct}%`
+            : progress.stage;
 
-  const speedText = speed > 0 && isActive && !isMuxing ? formatSpeed(speed) : '';
+  const speedText = speed > 0 && isActive && !isPostDownload ? formatSpeed(speed) : '';
 
   return (
     <div className={cn('relative h-5 w-full overflow-hidden rounded-md', isLight ? 'bg-gray-200' : 'bg-white/[0.06]')}>

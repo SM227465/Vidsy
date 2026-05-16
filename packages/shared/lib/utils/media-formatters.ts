@@ -6,59 +6,37 @@ const sanitizeFileNamePart = (s: string): string =>
     .replace(/\s+/g, ' ')
     .trim();
 
-// Badge answers "what format am I downloading?" (MP4 / WEBM / HLS / DASH / MP3 …)
-// rather than "is this media?". `+A` appended when a separate audio track is
-// paired with a video-only stream (Instagram-style delivery).
-const VIDEO_EXT_LABEL: Record<string, string> = {
-  '.mp4': 'MP4',
-  '.m4v': 'MP4',
-  '.webm': 'WEBM',
-  '.mov': 'MOV',
-  '.mkv': 'MKV',
-  '.flv': 'FLV',
-  '.avi': 'AVI',
-  '.ogv': 'OGV',
-  '.3gp': '3GP',
-  '.wmv': 'WMV',
-};
-const AUDIO_EXT_LABEL: Record<string, string> = {
-  '.mp3': 'MP3',
-  '.aac': 'AAC',
-  '.m4a': 'M4A',
-  '.ogg': 'OGG',
-  '.opus': 'OPUS',
-  '.flac': 'FLAC',
-  '.wav': 'WAV',
-  '.wma': 'WMA',
-};
-
-const pathExtension = (url: string): string => {
-  try {
-    const lastSegment = new URL(url).pathname.split('/').pop() ?? '';
-    const dotIdx = lastSegment.lastIndexOf('.');
-    return dotIdx >= 0 ? lastSegment.slice(dotIdx).toLowerCase() : '';
-  } catch {
-    return '';
-  }
-};
-
 export type DownloadState = { busyUrl: string | null; error: string | null };
 
-export const mediaBadgeLabel = (item: Pick<MediaItem, 'kind' | 'url' | 'mimeType' | 'audioUrl'>): string => {
-  const mime = item.mimeType?.toLowerCase() ?? '';
-  const ext = pathExtension(item.url);
-
+// Badge answers "how is this delivered?" (HTTP / HLS / DASH / MSS / MSE) rather
+// than "what container?". Container is irrelevant since the downloader always
+// muxes to MP4/MP3. `+A` appended when a separate audio track is paired with a
+// video-only stream (Instagram-style delivery).
+export const mediaBadgeLabel = (item: Pick<MediaItem, 'kind' | 'audioUrl'>): string => {
   let base: string;
-  if (item.kind === 'hls') base = 'HLS';
-  else if (item.kind === 'dash') base = 'DASH';
-  else if (item.kind === 'subtitle') base = 'CC';
-  else if (item.kind === 'audio') base = AUDIO_EXT_LABEL[ext] ?? (mime.includes('mp3') ? 'MP3' : 'AUDIO');
-  else if (item.kind === 'video') {
-    base =
-      VIDEO_EXT_LABEL[ext] ??
-      (mime.includes('webm') ? 'WEBM' : mime.includes('mp4') ? 'MP4' : mime.includes('quicktime') ? 'MOV' : 'MP4');
-  } else base = 'FILE';
-
+  switch (item.kind) {
+    case 'hls':
+      base = 'HLS';
+      break;
+    case 'dash':
+      base = 'DASH';
+      break;
+    case 'mss':
+      base = 'MSS';
+      break;
+    case 'mse':
+      base = 'MSE';
+      break;
+    case 'subtitle':
+      base = 'CC';
+      break;
+    case 'video':
+    case 'audio':
+      base = 'HTTP';
+      break;
+    default:
+      base = 'FILE';
+  }
   return item.kind === 'video' && item.audioUrl ? `${base}+A` : base;
 };
 
@@ -74,6 +52,8 @@ export const kindBadgeColor = (kind: MediaItem['kind'], isLight: boolean): strin
     dash: isLight
       ? 'bg-white/50 text-amber-900 ring-1 ring-white/40'
       : 'bg-black/40 text-amber-200 ring-1 ring-white/15',
+    mss: isLight ? 'bg-white/50 text-cyan-900 ring-1 ring-white/40' : 'bg-black/40 text-cyan-200 ring-1 ring-white/15',
+    mse: isLight ? 'bg-white/50 text-rose-900 ring-1 ring-white/40' : 'bg-black/40 text-rose-200 ring-1 ring-white/15',
     subtitle: isLight
       ? 'bg-white/50 text-pink-900 ring-1 ring-white/40'
       : 'bg-black/40 text-pink-200 ring-1 ring-white/15',
@@ -113,10 +93,38 @@ export const pickBestVariant = (variants: MediaVariant[]): MediaVariant | undefi
     return (curr.bandwidth ?? 0) > (best.bandwidth ?? 0) ? curr : best;
   }, undefined);
 
+// "1080p" conventionally names the short edge — a portrait video of 1080×1920
+// is still "1080p", not "1920p".
+export const shortEdgeLabel = (r: { width: number; height: number }) => `${Math.min(r.width, r.height)}p`;
+
+export const formatFileSize = (bytes?: number): string => {
+  if (!bytes || bytes <= 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
+};
+
 export const variantLabel = (v: MediaVariant): string => {
-  if (v.resolution) return `${v.resolution.height}p`;
+  if (v.resolution) return shortEdgeLabel(v.resolution);
   if (v.bandwidth) return `${Math.round(v.bandwidth / 1000)}k`;
   return v.name ?? 'Auto';
+};
+
+// "1920×1080 · 41.0 MB" — full W×H + size, used in the dropdown so the user
+// can compare qualities at a glance. Size is exact when known (HTTP HEAD or
+// network response), estimated (~) for HLS/DASH variants when bandwidth and
+// duration are both set.
+export const variantDescriptor = (v: MediaVariant, durationSec?: number): string => {
+  const wxh = v.resolution ? `${v.resolution.width}×${v.resolution.height}` : (v.name ?? 'Auto');
+  let sizeStr = '';
+  if (v.contentLength) {
+    sizeStr = formatFileSize(v.contentLength);
+  } else if (v.bandwidth && durationSec && durationSec > 0) {
+    const est = (v.bandwidth * durationSec) / 8;
+    const s = formatFileSize(est);
+    if (s) sizeStr = `~${s}`;
+  }
+  return [wxh, sizeStr].filter(Boolean).join(' · ');
 };
 
 export type FilenameTemplateContext = {
@@ -133,7 +141,7 @@ export const buildFilenameContext = (
   opts: { resolution?: string; ext?: string; date?: Date } = {},
 ): FilenameTemplateContext => {
   const best = item.variants?.length ? pickBestVariant(item.variants) : undefined;
-  const resolution = opts.resolution ?? (best?.resolution ? `${best.resolution.height}p` : undefined);
+  const resolution = opts.resolution ?? (best?.resolution ? shortEdgeLabel(best.resolution) : undefined);
   let host: string | undefined;
   try {
     host = new URL(item.pageUrl ?? item.url).hostname.replace(/^www\./, '');
