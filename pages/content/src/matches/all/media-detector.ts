@@ -18,12 +18,23 @@ const MAIN_VIDEO_MIN_W = 300;
 const MAIN_VIDEO_MIN_H = 200;
 
 const scanMainVideoPresence = () => {
-  const elements = document.querySelectorAll<HTMLVideoElement>('video');
-  for (const v of Array.from(elements)) {
+  const videos = document.querySelectorAll<HTMLVideoElement>('video');
+  for (const v of Array.from(videos)) {
     const rect = v.getBoundingClientRect();
     const style = window.getComputedStyle(v);
     if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
     if (rect.width >= MAIN_VIDEO_MIN_W && rect.height >= MAIN_VIDEO_MIN_H) {
+      publishMainVideoPresence(true);
+      return;
+    }
+  }
+  // Audio-only pages (freefy, soundcloud-style players) never satisfy the
+  // video size threshold but still have legitimate playable media. Treat any
+  // <audio> element that has loaded metadata (duration known) as main media so
+  // network audio/HLS detections aren't gated out on these tabs.
+  const audios = document.querySelectorAll<HTMLAudioElement>('audio');
+  for (const a of Array.from(audios)) {
+    if ((isFinite(a.duration) && a.duration > 0) || a.currentSrc || a.src) {
       publishMainVideoPresence(true);
       return;
     }
@@ -45,6 +56,10 @@ const htmlDecode = (s: string): string => {
 };
 
 const isLikelyMediaUrl = (url: string) => {
+  // Synthetic identifier for MSE-fed players where the real source is a
+  // per-page-load blob: URL we can't fetch — passes through so the UI can
+  // surface an "MSE" badge.
+  if (url.startsWith('mse:')) return true;
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
@@ -69,6 +84,7 @@ const isLikelyMediaUrl = (url: string) => {
 };
 
 const deriveKindFromElement = (el: HTMLMediaElement, url: string): MediaKind => {
+  if (url.startsWith('blob:')) return 'mse';
   if (url.toLowerCase().endsWith('.m3u8')) return 'hls';
   return el.tagName.toLowerCase() === 'audio' ? 'audio' : 'video';
 };
@@ -197,6 +213,62 @@ const getPageDuration = (): number | undefined => {
   return undefined;
 };
 
+// ─── Metadata probe for non-rendered URLs ───
+// When a page exposes multiple HTTP sources (e.g. HD + SD download links),
+// the live <video> element only tells us the resolution of whichever source
+// is currently playing. To learn the others' resolutions without making the
+// user toggle quality, load each in a detached <video preload="metadata">.
+// Browsers fetch only a few hundred KB to expose videoWidth/videoHeight.
+const PROBE_TIMEOUT_MS = 15_000;
+const probedUrls = new Set<string>();
+const probeUrlForResolution = (url: string) => {
+  if (probedUrls.has(url) || !url.startsWith('http')) return;
+  probedUrls.add(url);
+  const probe = document.createElement('video');
+  probe.preload = 'metadata';
+  probe.muted = true;
+  // No crossOrigin attribute — videoWidth/videoHeight are exposed without CORS,
+  // and many servers (lolpol, similar) don't send Access-Control-Allow-Origin,
+  // which would otherwise block the probe entirely.
+  probe.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none';
+  let done = false;
+  const cleanup = () => {
+    if (done) return;
+    done = true;
+    probe.removeAttribute('src');
+    try {
+      probe.load();
+    } catch {
+      /* noop */
+    }
+    probe.remove();
+  };
+  probe.addEventListener(
+    'loadedmetadata',
+    () => {
+      if (probe.videoWidth > 0 && probe.videoHeight > 0) {
+        chrome.runtime
+          .sendMessage({
+            type: MEDIA_MESSAGE.DETECTED,
+            payload: {
+              url,
+              source: 'element',
+              resolution: { width: probe.videoWidth, height: probe.videoHeight },
+              duration: isFinite(probe.duration) && probe.duration > 0 ? probe.duration : undefined,
+            },
+          })
+          .catch(() => undefined);
+      }
+      cleanup();
+    },
+    { once: true },
+  );
+  probe.addEventListener('error', cleanup, { once: true });
+  setTimeout(cleanup, PROBE_TIMEOUT_MS);
+  probe.src = url;
+  document.body.appendChild(probe);
+};
+
 // ─── Candidate sending ───
 const sendCandidate = (candidate: { url: string; mimeType?: string; kind?: MediaKind }, el?: HTMLMediaElement) => {
   if (!candidate.url || !isLikelyMediaUrl(candidate.url)) return;
@@ -211,6 +283,15 @@ const sendCandidate = (candidate: { url: string; mimeType?: string; kind?: Media
   const thumbnail = isVideo
     ? (captureVideoThumbnail(el as HTMLVideoElement) ?? poster ?? getPageThumbnail())
     : getPageThumbnail();
+  const videoEl = isVideo ? (el as HTMLVideoElement) : undefined;
+  // Only trust the live element's resolution for the URL it is actually
+  // rendering. Other source URLs (e.g. alt-quality <source> tags) need their
+  // own probe — we'd otherwise mislabel HD with SD's dimensions or vice versa.
+  const isRendered = videoEl && (videoEl.currentSrc === candidate.url || videoEl.src === candidate.url);
+  const resolution =
+    isRendered && videoEl && videoEl.videoWidth > 0 && videoEl.videoHeight > 0
+      ? { width: videoEl.videoWidth, height: videoEl.videoHeight }
+      : undefined;
 
   const payload = {
     url: candidate.url,
@@ -220,11 +301,12 @@ const sendCandidate = (candidate: { url: string; mimeType?: string; kind?: Media
     title: getPageTitle(),
     duration,
     thumbnail,
+    resolution,
   };
 
   // If already sent, only resend if we now have richer data
   if (sentUrls.has(candidate.url)) {
-    if (thumbnail || duration) {
+    if (thumbnail || duration || resolution) {
       chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.DETECTED, payload }).catch(() => undefined);
     }
     return;
@@ -232,17 +314,46 @@ const sendCandidate = (candidate: { url: string; mimeType?: string; kind?: Media
 
   sentUrls.add(candidate.url);
   chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.DETECTED, payload }).catch(() => undefined);
+
+  // Kick off a metadata probe for non-rendered HTTP video URLs so their
+  // resolution lands on a follow-up detection.
+  if (isVideo && !isRendered && candidate.kind !== 'hls' && candidate.kind !== 'dash' && candidate.kind !== 'mse') {
+    probeUrlForResolution(candidate.url);
+  }
 };
 
 const collectFromElement = (el: HTMLMediaElement) => {
   const urls = new Set<string>();
+  let blobSrc: string | undefined;
 
-  if (el.currentSrc) urls.add(el.currentSrc);
-  if (el.src) urls.add(el.src);
+  for (const u of [el.currentSrc, el.src]) {
+    if (!u) continue;
+    if (u.startsWith('blob:')) blobSrc = u;
+    else urls.add(u);
+  }
 
   el.querySelectorAll('source').forEach(source => {
-    if (source.src) urls.add(source.src);
+    if (source.src && !source.src.startsWith('blob:')) urls.add(source.src);
   });
+
+  // Modern MSE pattern: the MediaSource is bound via `srcObject` directly,
+  // skipping URL.createObjectURL entirely — so both el.src and el.currentSrc
+  // are empty. We can't fetch this either, but the MSE label tells the user
+  // we at least saw the media.
+  const srcObjectBound = 'srcObject' in el && (el as HTMLMediaElement & { srcObject: unknown }).srcObject != null;
+
+  if (
+    urls.size === 0 &&
+    (blobSrc || srcObjectBound) &&
+    (el instanceof HTMLVideoElement || el instanceof HTMLAudioElement)
+  ) {
+    // MSE-fed player: source is bound to this document only (blob URL or
+    // direct srcObject) and we can't fetch it. Register an MSE label so the
+    // UI shows the media instead of silently dropping it. The download action
+    // is blocked downstream.
+    sendCandidate({ url: `mse:${window.location.href}`, kind: 'mse' }, el);
+    return;
+  }
 
   urls.forEach(url => {
     const kind = deriveKindFromElement(el, url);

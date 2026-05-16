@@ -1,4 +1,4 @@
-export type MediaKind = 'video' | 'audio' | 'hls' | 'dash' | 'subtitle' | 'other';
+export type MediaKind = 'video' | 'audio' | 'hls' | 'dash' | 'mss' | 'mse' | 'subtitle' | 'other';
 export type MediaSource = 'element' | 'network';
 
 export type SubtitleFormat = 'vtt' | 'srt' | 'ttml' | 'xml';
@@ -16,6 +16,10 @@ export type MediaVariant = {
   name?: string;
   bandwidth?: number;
   resolution?: { width: number; height: number };
+  // Exact size in bytes. Set when the variant is an HTTP file whose
+  // Content-Length we learned via HEAD or a network response. Absent for
+  // HLS/DASH segments (use bandwidth × duration for an estimate).
+  contentLength?: number;
   codecs?: string;
   // Set when this variant is video-only and must be muxed with a separate audio track.
   // The downloader fetches both streams in parallel and merges them via FFmpeg -c copy.
@@ -39,6 +43,9 @@ export type MediaItem = {
   fileName?: string;
   contentLength?: number;
   variants?: MediaVariant[];
+  // Native resolution of the rendered <video> element (or top-level stream
+  // when known). Drives the "1080p" badge on rows without per-variant data.
+  resolution?: { width: number; height: number };
   thumbnail?: string; // data URL or poster URL
   duration?: number; // seconds
   // Top-level audio pairing — used when the item itself (not a variant) is a

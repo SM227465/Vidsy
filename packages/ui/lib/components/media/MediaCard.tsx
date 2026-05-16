@@ -7,7 +7,7 @@ import {
   kindBadgeColor,
   mediaBadgeLabel,
   pickBestVariant,
-  variantLabel,
+  shortEdgeLabel,
   formatDuration,
 } from '@extension/shared';
 import { useEffect, useRef } from 'react';
@@ -39,7 +39,6 @@ export const MediaCard = ({
   startEdit,
   copyUrl,
   onDismiss,
-  textMuted,
 }: {
   item: MediaItem;
   isLight: boolean;
@@ -59,7 +58,6 @@ export const MediaCard = ({
   startEdit: (item: MediaItem) => void;
   copyUrl: (url: string) => void;
   onDismiss: () => void;
-  textMuted: string;
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -89,11 +87,12 @@ export const MediaCard = ({
   const currentVariantUrl = selectedVariantUrl ?? bestVariant?.url ?? item.variants?.[0]?.url;
   const currentVariant = item.variants?.find((v: MediaVariant) => v.url === currentVariantUrl);
   const resLabel = currentVariant?.resolution
-    ? `${currentVariant.resolution.height}p`
+    ? shortEdgeLabel(currentVariant.resolution)
     : item.variants?.length
       ? 'Auto'
-      : '';
-  const formatLabel = item.kind === 'audio' ? 'MP3' : 'MP4';
+      : item.resolution
+        ? shortEdgeLabel(item.resolution)
+        : '';
   const displayName = item.title?.trim() || (item.fileName ?? item.url).replace(/\.[^.]+$/, '').replace(/_/g, ' ');
   const durationStr = item.duration ? formatDuration(item.duration) : '';
 
@@ -202,7 +201,18 @@ export const MediaCard = ({
           </div>
 
           {/* Actions */}
-          {item.isDrmProtected ? (
+          {item.kind === 'mse' ? (
+            <div className="flex items-center gap-1.5">
+              <span
+                className={cn(
+                  'flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold',
+                  isLight ? 'bg-amber-50 text-amber-700' : 'bg-amber-500/15 text-amber-400',
+                )}
+                title="The player feeds this video through MediaSource Extensions. The source is a per-page blob URL with no fetchable manifest, so Vidsy can't download it.">
+                MSE — no fetchable source
+              </span>
+            </div>
+          ) : item.isDrmProtected ? (
             <div className="flex items-center gap-1.5">
               <span
                 className={cn(
@@ -265,37 +275,47 @@ export const MediaCard = ({
                 title="Rename">
                 <IconEdit />
               </button>
-              <span className={cn('text-[10px] font-semibold', textMuted)}>{formatLabel}</span>
-              {item.variants && item.variants.length > 1 ? (
-                <select
-                  className={cn(
-                    'rounded-md border px-1.5 py-0.5 text-[10px] font-bold outline-none',
-                    isLight
-                      ? 'border-gray-200 bg-gray-100 text-gray-700'
-                      : 'border-white/[0.08] bg-white/[0.06] text-gray-300',
-                  )}
-                  value={currentVariantUrl}
-                  onChange={e => setSelectedVariants(prev => ({ ...prev, [item.id]: e.target.value }))}>
-                  {item.variants.map((v: MediaVariant) => (
-                    <option
-                      key={v.url}
-                      value={v.url}
-                      className={isLight ? 'bg-white text-gray-800' : 'bg-gray-800 text-gray-200'}>
-                      {variantLabel(v)}
-                    </option>
-                  ))}
-                </select>
-              ) : resLabel ? (
-                <span
-                  className={cn(
-                    'rounded-md border px-1.5 py-0.5 text-[10px] font-bold',
-                    isLight
-                      ? 'border-gray-200 bg-gray-100 text-gray-700'
-                      : 'border-white/[0.08] bg-white/[0.06] text-gray-300',
-                  )}>
-                  {resLabel}
-                </span>
-              ) : null}
+              {(() => {
+                // Only variants with a known resolution appear in the dropdown.
+                // We show just "W×H" — no size, no Auto fallback, no bandwidth.
+                const resolvedVariants = item.variants?.filter((v: MediaVariant) => v.resolution) ?? [];
+                if (resolvedVariants.length > 1) {
+                  return (
+                    <select
+                      className={cn(
+                        'rounded-md border px-1.5 py-0.5 text-[10px] font-bold outline-none',
+                        isLight
+                          ? 'border-gray-200 bg-gray-100 text-gray-700'
+                          : 'border-white/[0.08] bg-white/[0.06] text-gray-300',
+                      )}
+                      value={currentVariantUrl}
+                      onChange={e => setSelectedVariants(prev => ({ ...prev, [item.id]: e.target.value }))}>
+                      {resolvedVariants.map((v: MediaVariant) => (
+                        <option
+                          key={v.url}
+                          value={v.url}
+                          className={isLight ? 'bg-white text-gray-800' : 'bg-gray-800 text-gray-200'}>
+                          {`${v.resolution!.width}×${v.resolution!.height}`}
+                        </option>
+                      ))}
+                    </select>
+                  );
+                }
+                if (resLabel) {
+                  return (
+                    <span
+                      className={cn(
+                        'rounded-md border px-1.5 py-0.5 text-[10px] font-bold',
+                        isLight
+                          ? 'border-gray-200 bg-gray-100 text-gray-700'
+                          : 'border-white/[0.08] bg-white/[0.06] text-gray-300',
+                      )}>
+                      {resLabel}
+                    </span>
+                  );
+                }
+                return null;
+              })()}
               <div className="flex-1" />
               <button
                 className="flex items-center gap-1 rounded-full bg-blue-500 px-3 py-1 text-[11px] font-semibold text-white shadow-sm shadow-blue-500/25 transition hover:bg-blue-600 active:scale-[0.97]"

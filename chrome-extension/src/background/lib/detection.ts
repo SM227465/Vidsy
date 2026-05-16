@@ -35,6 +35,29 @@ const fetchThumbnailAsDataUrl = async (url: string): Promise<string | null> => {
   }
 };
 
+// URLs we've already attempted a HEAD probe for, to avoid repeat requests
+// when an item is patched / re-upserted. Set membership doesn't say whether
+// the probe succeeded, only that we've tried.
+const headProbedUrls = new Set<string>();
+
+// One-shot HEAD probe to learn Content-Length for an HTTP video/audio URL
+// the browser never fetched directly (e.g. an <a href> alt-quality download
+// link). Patches the item via upsertDetection on success. Silent on failure.
+const probeContentLength = async (url: string, tabId?: number, pageUrl?: string) => {
+  if (headProbedUrls.has(url)) return;
+  headProbedUrls.add(url);
+  try {
+    const res = await fetch(url, { method: 'HEAD', credentials: 'omit', redirect: 'follow' });
+    if (!res.ok) return;
+    const cl = res.headers.get('content-length');
+    const bytes = cl ? Number(cl) : NaN;
+    if (!Number.isFinite(bytes) || bytes < MIN_MEDIA_SIZE_BYTES) return;
+    await upsertDetection({ url, contentLength: bytes }, tabId, pageUrl);
+  } catch {
+    // Server may reject HEAD, block CORS, or be offline — fine, just no size.
+  }
+};
+
 const seenUrlsByTab = new Map<number, Set<string>>();
 const seenHlsMasterDirsByTab = new Map<number, Set<string>>();
 // Tabs where a content script has seen a rendered <video>/<audio> element
@@ -70,15 +93,172 @@ const hostOf = (url: string): string | null => {
   }
 };
 
+const shortEdge = (r: { width: number; height: number }) => Math.min(r.width, r.height);
+
+// Group same-host same-duration HTTP video items into a single MediaItem with
+// a variants[] list. This is the lolpol/HD+SD case: a page exposes multiple
+// direct MP4 URLs of the same video, one per quality. We pick the largest-
+// resolution URL as the primary and attach the rest as variants so the UI can
+// show a single row with a quality dropdown.
+//
+// Eligibility is intentionally loose: kind='video', http URL, known duration.
+// Resolution is NOT required — some probes fail (CORS, referer-locked servers),
+// and we still want to merge those items as variants rather than show duplicates.
+//
+// Re-mergeable: existing merged items (with variants[]) are decomposed back
+// into per-variant streams and re-bucketed alongside any newly-detected URLs.
+// This catches the case where a third URL is detected AFTER an initial HD+SD
+// merge — without decomposition the new URL would be stuck as a standalone.
+//
+// Pre-existing audioUrl on any merged item gets cleared — variant-merge wins
+// over a bogus earlier +A pair-detect.
+const consolidateHttpVideoVariants = (items: MediaItem[]): MediaItem[] => {
+  type Stream = {
+    url: string;
+    resolution?: { width: number; height: number };
+    contentLength?: number;
+    sourceIdx: number; // index of the source MediaItem in `items`
+  };
+  const buckets = new Map<string, Stream[]>();
+  const eligibleIdx = new Set<number>();
+
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.kind !== 'video' || !it.duration || !it.url.startsWith('http')) continue;
+    const host = hostOf(it.url);
+    if (!host) continue;
+    eligibleIdx.add(i);
+    const key = `${host}|${Math.round(it.duration * 10)}`;
+    const list = buckets.get(key) ?? [];
+    if (!buckets.has(key)) buckets.set(key, list);
+
+    if (it.variants && it.variants.length > 0) {
+      // Decompose: each variant becomes a stream in the bucket.
+      for (const v of it.variants) {
+        list.push({
+          url: v.url,
+          resolution: v.resolution,
+          contentLength: v.contentLength,
+          sourceIdx: i,
+        });
+      }
+    } else {
+      list.push({
+        url: it.url,
+        resolution: it.resolution,
+        contentLength: it.contentLength,
+        sourceIdx: i,
+      });
+    }
+  }
+
+  // Decide which buckets actually need consolidation work. A bucket needs work
+  // if it has >1 stream OR if its single stream lives inside a variants[] (so
+  // it should be flattened back to a standalone item).
+  const bucketsNeedingWork = new Map<string, Stream[]>();
+  for (const [key, streams] of buckets.entries()) {
+    if (streams.length > 1) {
+      bucketsNeedingWork.set(key, streams);
+      continue;
+    }
+    const onlySource = items[streams[0].sourceIdx];
+    if (onlySource.variants && onlySource.variants.length > 1) {
+      // Source had multiple variants but only one survives — flatten back.
+      bucketsNeedingWork.set(key, streams);
+    }
+  }
+
+  if (bucketsNeedingWork.size === 0) return items;
+
+  // Build the rebuilt MediaItems keyed by the source index that should host them
+  // (the lowest source index in each bucket — preserves list order).
+  const rebuilt = new Map<number, MediaItem>();
+  const consumedIdx = new Set<number>();
+
+  for (const streams of bucketsNeedingWork.values()) {
+    const sortedStreams = [...streams].sort((a, b) => {
+      const aShort = a.resolution ? shortEdge(a.resolution) : -1;
+      const bShort = b.resolution ? shortEdge(b.resolution) : -1;
+      return bShort - aShort;
+    });
+
+    const hostIdx = Math.min(...streams.map(s => s.sourceIdx));
+    streams.forEach(s => consumedIdx.add(s.sourceIdx));
+
+    const hostItem = items[hostIdx];
+
+    if (sortedStreams.length === 1) {
+      // Single stream — emit as standalone (resolution/contentLength inlined).
+      const s = sortedStreams[0];
+      rebuilt.set(hostIdx, {
+        ...hostItem,
+        url: s.url,
+        resolution: s.resolution,
+        contentLength: s.contentLength,
+        variants: undefined,
+        audioUrl: undefined,
+        audioMimeType: undefined,
+      });
+      continue;
+    }
+
+    // Multi-stream — merge as one item with variants[].
+    const primary = sortedStreams[0];
+    // Prefer the source item that owned the primary stream so we inherit its
+    // title/thumbnail/duration, falling back to hostItem (the first source in
+    // list order) when the primary's source no longer exists in `items`.
+    const primarySource = items.find((_, i) => streams.some(s => s.url === primary.url && s.sourceIdx === i));
+    const inheritFrom = primarySource ?? hostItem;
+
+    const variants: MediaVariant[] = sortedStreams.map(s => ({
+      url: s.url,
+      resolution: s.resolution,
+      contentLength: s.contentLength,
+    }));
+
+    rebuilt.set(hostIdx, {
+      ...inheritFrom,
+      url: primary.url,
+      variants,
+      contentLength: undefined,
+      resolution: undefined,
+      audioUrl: undefined,
+      audioMimeType: undefined,
+    });
+  }
+
+  // Emit in original order: pass-through ineligible items, replace eligible
+  // ones with their bucket's rebuilt host (or skip if they've been consumed by
+  // a host at a smaller index).
+  const result: MediaItem[] = [];
+  for (let i = 0; i < items.length; i++) {
+    if (rebuilt.has(i)) {
+      result.push(rebuilt.get(i)!);
+    } else if (eligibleIdx.has(i) && consumedIdx.has(i)) {
+      // Consumed by a bucket whose host is at a smaller index — already pushed.
+      continue;
+    } else {
+      result.push(items[i]);
+    }
+  }
+  return result;
+};
+
 // Find a video-only entry in `list` that looks like the missing half of an
 // adaptive pair (same host, matching duration, no existing audioUrl) for the
 // given `probe`. Returns its index, or -1. Called from both the insert path
 // and the patch path — a network detection arrives without duration, so the
 // pair-merge only becomes possible after the scripting callback patches
 // duration in. Scanning on every patch is cheap (per-tab list is capped at 50).
+//
+// Guard against false pairing: if both streams have a known resolution (via the
+// content-script metadata probe), they're both real video tracks — Instagram-
+// style pairing only applies when one side is audio-only (no resolution after
+// probe). Without this guard, sites that offer HD + SD MP4s of the same
+// duration get incorrectly merged into a single "HTTP+A" item.
 const findAdaptiveMateIdx = (
   list: MediaItem[],
-  probe: { url: string; duration?: number; kind?: MediaItem['kind'] },
+  probe: { url: string; duration?: number; kind?: MediaItem['kind']; resolution?: MediaItem['resolution'] },
 ): number => {
   if (probe.kind !== 'video' || !probe.duration) return -1;
   const probeHost = hostOf(probe.url);
@@ -90,7 +270,9 @@ const findAdaptiveMateIdx = (
       item.url !== probe.url &&
       item.duration &&
       Math.abs(item.duration - (probe.duration ?? 0)) < 0.5 &&
-      hostOf(item.url) === probeHost,
+      hostOf(item.url) === probeHost &&
+      // Skip when both sides have been probed as full video tracks.
+      !(probe.resolution && item.resolution),
   );
 };
 
@@ -196,6 +378,7 @@ const normalizeDetection = (candidate: Partial<MediaItem>, tabId?: number, pageU
     contentLength: candidate.contentLength,
     kind,
     variants: candidate.variants,
+    resolution: candidate.resolution,
     thumbnail: candidate.thumbnail,
     duration: candidate.duration,
     audioUrl: candidate.audioUrl,
@@ -220,7 +403,49 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
   }
 
   const tabKey = tabId !== undefined ? String(tabId) : 'unknown';
-  const current = await getTabItems(tabKey);
+  let current = await getTabItems(tabKey);
+
+  // Un-pair safety net: if this candidate's probe just revealed a real
+  // resolution AND its URL is currently bound as another item's audioUrl, the
+  // earlier pair-detect was wrong (two video tracks got merged as if one were
+  // audio). Clear the audioUrl on the primary so this URL re-emerges below as
+  // a standalone item.
+  if (candidate.resolution) {
+    const stolenByIdx = current.findIndex(it => it.audioUrl === candidate.url);
+    if (stolenByIdx !== -1) {
+      const primary = current[stolenByIdx];
+      const cleared: MediaItem = { ...primary, audioUrl: undefined, audioMimeType: undefined };
+      current = current.map((it, i) => (i === stolenByIdx ? cleared : it));
+      setTabItems(tabKey, current);
+    }
+  }
+
+  // Variant-aware patch: if this URL is already a variant of an existing
+  // merged item, patch the variant in place. Catches:
+  // - HEAD probe results landing after the variant-merge
+  // - Late metadata probe sending resolution
+  // - Element re-scans firing for a URL that's already merged in
+  const variantOwnerIdx = current.findIndex(it => it.variants?.some(v => v.url === candidate.url));
+  if (variantOwnerIdx !== -1) {
+    if (candidate.contentLength || candidate.resolution) {
+      const owner = current[variantOwnerIdx];
+      const newVariants = (owner.variants ?? []).map(v =>
+        v.url === candidate.url
+          ? {
+              ...v,
+              contentLength: v.contentLength ?? candidate.contentLength,
+              resolution: v.resolution ?? candidate.resolution,
+            }
+          : v,
+      );
+      const updated = current.map((it, i) => (i === variantOwnerIdx ? { ...it, variants: newVariants } : it));
+      setTabItems(tabKey, updated);
+      if (tabId !== undefined) updateBadge(tabId, updated.length);
+    }
+    // No richer data to add — drop the duplicate detection on the floor.
+    return;
+  }
+
   const existingIdx = current.findIndex(item => item.url === candidate.url);
 
   if (existingIdx !== -1) {
@@ -229,6 +454,8 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
     const patch: Partial<MediaItem> = {};
     if (candidate.thumbnail && !existing.thumbnail) patch.thumbnail = candidate.thumbnail;
     if (candidate.duration && !existing.duration) patch.duration = candidate.duration;
+    if (candidate.resolution && !existing.resolution) patch.resolution = candidate.resolution;
+    if (candidate.contentLength && !existing.contentLength) patch.contentLength = candidate.contentLength;
     if (candidate.variants?.length && !existing.variants?.length) patch.variants = candidate.variants;
     if (candidate.audioUrl && !existing.audioUrl) {
       patch.audioUrl = candidate.audioUrl;
@@ -297,17 +524,19 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
       }
     }
 
-    setTabItems(tabKey, updatedList);
-    if (tabId !== undefined) updateBadge(tabId, updatedList.length);
+    const consolidated = consolidateHttpVideoVariants(updatedList);
+    setTabItems(tabKey, consolidated);
+    if (tabId !== undefined) updateBadge(tabId, consolidated.length);
     return;
   }
 
-  // Once an HLS/DASH manifest exists for this tab, treat any further video/audio
-  // detections (element OR network) as player segments and suppress them — the
-  // manifest is the downloadable artifact, individual segments are not.
+  // Once a real stream (HLS/DASH/MSS) exists for this tab, treat any further
+  // video/audio/MSE detections as player-side noise and suppress them — the
+  // manifest is the downloadable artifact, individual segments and the
+  // MediaSource shell are not.
   if (
-    (candidate.kind === 'video' || candidate.kind === 'audio') &&
-    current.some(item => item.kind === 'hls' || item.kind === 'dash')
+    (candidate.kind === 'video' || candidate.kind === 'audio' || candidate.kind === 'mse') &&
+    current.some(item => item.kind === 'hls' || item.kind === 'dash' || item.kind === 'mss')
   ) {
     return;
   }
@@ -322,6 +551,7 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
       url: candidate.url,
       duration: candidate.duration,
       kind: candidate.kind,
+      resolution: candidate.resolution,
     });
     if (mateIdx !== -1) {
       const updatedList = [...current];
@@ -334,16 +564,30 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
 
   const seenSet = ensureSeenCache(tabId);
   const normalized = normalizeDetection(candidate, tabId, pageUrl);
-  // When an HLS/DASH manifest arrives, drop any pre-existing video/audio entries
-  // for this tab — they are almost certainly player-side requests for the same
-  // stream (Instagram, for example, fires progressive-MP4 requests before the MPD).
+  // When an HLS/DASH/MSS manifest arrives, drop any pre-existing video/audio/MSE
+  // entries for this tab — they are almost certainly player-side requests or the
+  // MediaSource shell for the same stream (Instagram, for example, fires
+  // progressive-MP4 requests before the MPD).
   const cleaned =
-    normalized.kind === 'hls' || normalized.kind === 'dash'
-      ? current.filter(item => item.kind !== 'video' && item.kind !== 'audio')
+    normalized.kind === 'hls' || normalized.kind === 'dash' || normalized.kind === 'mss'
+      ? current.filter(item => item.kind !== 'video' && item.kind !== 'audio' && item.kind !== 'mse')
       : current;
-  const updatedList = [normalized, ...cleaned].slice(0, 50);
+  const inserted = [normalized, ...cleaned].slice(0, 50);
+  const updatedList = consolidateHttpVideoVariants(inserted);
   setTabItems(tabKey, updatedList);
   seenSet?.add(candidate.url);
+
+  // HEAD probe for HTTP video/audio items the browser didn't fetch directly,
+  // so the row can still display a size. HLS/DASH/MSS use the manifest path;
+  // MSE has no fetchable source.
+  if (
+    (normalized.kind === 'video' || normalized.kind === 'audio') &&
+    normalized.contentLength === undefined &&
+    normalized.url.startsWith('http')
+  ) {
+    void probeContentLength(normalized.url, tabId, pageUrl);
+  }
+
   if (tabId !== undefined) {
     updateBadge(tabId, updatedList.length);
     // Grab title, duration, and thumbnail from the tab via scripting
