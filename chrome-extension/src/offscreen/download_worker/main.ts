@@ -233,12 +233,33 @@ const handleMux = async (req: MuxRequest): Promise<void> => {
     await registerJsfetch(libav, {});
     console.log(`[mux] registration complete; invoking ffmpeg()`);
 
+    // Emit one mux-stage event immediately so the UI flips off the stale
+    // download-audio 100% and into the indeterminate "Processing…" state. The
+    // per-tick poll below only fires when ffmpeg_get_out_time_ms is available
+    // in the build; without it this is the only progress event the UI gets
+    // during mux.
+    post({
+      type: 'progress',
+      jobKey,
+      stage,
+      downloadedBytes: 0,
+      estimatedBytes,
+      muxPercent: undefined,
+    });
+
     pollHandle = setInterval(() => {
       (async () => {
         try {
           if (!libav) return;
-          const outTimeMs = await libav.ffmpeg_get_out_time_ms();
-          const totalBytes = await libav.ffmpeg_get_total_size_bytes();
+          // These two methods are an extension some libav.js builds carry but
+          // the vendored h264-aac-mp3 build doesn't expose. When missing we
+          // skip the per-tick muxPercent update — the mux still runs to
+          // completion, the UI just lacks fine-grained progress.
+          const getOutTime = libav.ffmpeg_get_out_time_ms as (() => Promise<number>) | undefined;
+          const getTotalBytes = libav.ffmpeg_get_total_size_bytes as (() => Promise<number>) | undefined;
+          if (typeof getOutTime !== 'function' || typeof getTotalBytes !== 'function') return;
+          const outTimeMs = await getOutTime.call(libav);
+          const totalBytes = await getTotalBytes.call(libav);
           let muxPercent: number | undefined;
           if (durationSeconds && durationSeconds > 0 && outTimeMs > 0) {
             muxPercent = Math.min(99, Math.round((outTimeMs / 1000 / durationSeconds) * 100));

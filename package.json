@@ -1,6 +1,6 @@
 {
   "name": "vidsy",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Browser extension to detect and download media from any webpage",
   "private": true,
   "type": "module",

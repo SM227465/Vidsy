@@ -13,14 +13,20 @@ interface LibAVInstance {
   ffmpeg(...args: string[]): Promise<number>;
   ffmpeg_main(...args: string[]): Promise<number>;
 
-  jsfetch_set_read_timeout(ms: number): Promise<void>;
-  jsfetch_set_fetch_timeout(ms: number): Promise<void>;
-  jsfetch_set_initial_retry_delay(ms: number): Promise<void>;
-  jsfetch_set_bypass_cache(flag: number): Promise<void>;
+  // Optional jsfetch tunables — present in libav.js builds newer than 6.8.8.0.
+  // The vendored bundle doesn't ship these; registerJsfetch calls each via a
+  // typeof-function guard so the mux still works on older builds.
+  jsfetch_set_read_timeout?: (ms: number) => Promise<void>;
+  jsfetch_set_fetch_timeout?: (ms: number) => Promise<void>;
+  jsfetch_set_initial_retry_delay?: (ms: number) => Promise<void>;
+  jsfetch_set_bypass_cache?: (flag: number) => Promise<void>;
 
-  ffmpeg_get_out_time_ms(): Promise<number>;
-  ffmpeg_get_total_size_bytes(): Promise<number>;
-  ffmpeg_interrupt(): Promise<void>;
+  // Optional progress / cancellation helpers — exposed by custom libav.js
+  // builds but absent from the vendored h264-aac-mp3 wasm. Callers check
+  // `typeof === 'function'` before using.
+  ffmpeg_get_out_time_ms?: () => Promise<number>;
+  ffmpeg_get_total_size_bytes?: () => Promise<number>;
+  ffmpeg_interrupt?: () => Promise<void>;
 
   AVERROR_EOF: number;
 
