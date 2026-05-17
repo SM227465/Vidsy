@@ -533,11 +533,47 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
   // Once a real stream (HLS/DASH/MSS) exists for this tab, treat any further
   // video/audio/MSE detections as player-side noise and suppress them — the
   // manifest is the downloadable artifact, individual segments and the
-  // MediaSource shell are not.
+  // MediaSource shell are not. Before dropping the candidate, salvage any
+  // duration/thumbnail it carries and patch them onto the manifest item:
+  // the MSE candidate from the iframe's <video> element knows el.duration,
+  // which the network-side HLS detection has no way to learn on its own.
   if (
     (candidate.kind === 'video' || candidate.kind === 'audio' || candidate.kind === 'mse') &&
     current.some(item => item.kind === 'hls' || item.kind === 'dash' || item.kind === 'mss')
   ) {
+    // Only the MSE candidate is a trustworthy source of main-player metadata:
+    // its <video> element is bound to the same MediaSource that the manifest
+    // feeds. Plain HTTP video candidates here would be ads/pre-rolls living
+    // inside the player frame — patching their duration onto the manifest
+    // would mislabel the runtime.
+    //
+    // Duration overwrites unconditionally: the executeScript probe at HLS-
+    // insert time often samples while a pre-roll ad is still playing and
+    // writes the ad's 30s duration onto the manifest. The MSE candidate
+    // fires after the main MediaSource is bound and its duration settles,
+    // so it always reflects the real content and should win.
+    //
+    // Thumbnail only fills if missing: the page's og:image (captured by the
+    // executeScript probe in the top frame) is almost always a better
+    // representation than a captured video frame, which can be black during
+    // an ad→main transition or a generic player poster.
+    if (candidate.kind === 'mse' && (candidate.duration || candidate.thumbnail)) {
+      const manifestIdx = current.findIndex(item => item.kind === 'hls' || item.kind === 'dash' || item.kind === 'mss');
+      if (manifestIdx !== -1) {
+        const manifest = current[manifestIdx];
+        const patch: Partial<MediaItem> = {};
+        if (candidate.duration && candidate.duration !== manifest.duration) {
+          patch.duration = candidate.duration;
+        }
+        if (candidate.thumbnail && !manifest.thumbnail) {
+          patch.thumbnail = candidate.thumbnail;
+        }
+        if (Object.keys(patch).length > 0) {
+          const updated = current.map((it, i) => (i === manifestIdx ? { ...it, ...patch } : it));
+          setTabItems(tabKey, updated);
+        }
+      }
+    }
     return;
   }
 
@@ -590,10 +626,14 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
 
   if (tabId !== undefined) {
     updateBadge(tabId, updatedList.length);
-    // Grab title, duration, and thumbnail from the tab via scripting
+    // Grab title, duration, and thumbnail from the tab via scripting.
+    // `allFrames: true` is required because many players (JWPlayer-in-iframe,
+    // YouTube, etc.) keep the actual <video> element inside a sub-frame —
+    // the top frame has the title/og:image but no playable element, so its
+    // duration probe always returns null. We scan every frame and merge.
     chrome.scripting
       .executeScript({
-        target: { tabId },
+        target: { tabId, allFrames: true },
         func: () => {
           // ─── Title (priority: JSON-LD > og:title > document.title with suffix stripped) ───
           let title: string | null = null;
@@ -674,18 +714,34 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
         },
       })
       .then(results => {
-        const data = results?.[0]?.result;
-        if (!data) return;
+        if (!results || results.length === 0) return;
+        // Merge across frames: prefer the top frame (frameId === 0) for title
+        // and thumbnail since page metadata lives there, but accept duration
+        // from whichever frame has a playable element. Sub-frame results
+        // backfill anything the top frame couldn't supply.
+        const top = results.find(r => r.frameId === 0)?.result ?? null;
+        const merged: { title: string | null; thumbnail: string | null; duration: number | null } = {
+          title: top?.title ?? null,
+          thumbnail: top?.thumbnail ?? null,
+          duration: top?.duration ?? null,
+        };
+        for (const r of results) {
+          const v = r?.result;
+          if (!v) continue;
+          if (!merged.title && v.title) merged.title = v.title;
+          if (!merged.thumbnail && v.thumbnail) merged.thumbnail = v.thumbnail;
+          if (!merged.duration && v.duration) merged.duration = v.duration;
+        }
         const patch: Parameters<typeof upsertDetection>[0] = { url: normalized.url };
-        if (data.thumbnail && !normalized.thumbnail) patch.thumbnail = data.thumbnail;
+        if (merged.thumbnail && !normalized.thumbnail) patch.thumbnail = merged.thumbnail;
         // Update title if we have a better one — current title may be just a hostname
-        if (data.title) {
-          const decoded = htmlDecode(data.title);
+        if (merged.title) {
+          const decoded = htmlDecode(merged.title);
           if (!normalized.title || normalized.title.match(/^[\w.-]+\.\w{2,}$/)) {
             patch.title = decoded;
           }
         }
-        if (data.duration && !normalized.duration) patch.duration = data.duration;
+        if (merged.duration && !normalized.duration) patch.duration = merged.duration;
         if (Object.keys(patch).length > 1) void upsertDetection(patch, tabId);
       })
       .catch(() => undefined);
