@@ -322,6 +322,39 @@ const sendCandidate = (candidate: { url: string; mimeType?: string; kind?: Media
   }
 };
 
+// MSE detection is the weakest signal: only useful when no real manifest
+// (HLS/DASH/MSS) exists for this tab. Many players (e.g. JWPlayer/hls.js)
+// attach the MediaSource to <video>.src BEFORE fetching the m3u8 — so our
+// content-side MSE detection beats the background's HLS network detection
+// by a few hundred ms. Defer the MSE send so the background has time to
+// observe the manifest; its own dedup will then drop the MSE candidate if
+// HLS/DASH/MSS landed. If nothing else shows up after the delay the MSE
+// badge still appears, just slightly later.
+const MSE_DEFER_MS = 3000;
+let mseDeferTimer: ReturnType<typeof setTimeout> | undefined;
+const scheduleMseSend = (url: string, el: HTMLMediaElement) => {
+  // Once the initial deferred send has fired, downstream loadedmetadata /
+  // durationchange events should propagate immediately (sendCandidate has its
+  // own re-send guard for richer data). This is critical for pre-roll cases:
+  // the first send may carry the ad's duration; the main video's duration
+  // only arrives later, and we need that update to reach the background.
+  if (sentUrls.has(url)) {
+    sendCandidate({ url, kind: 'mse' }, el);
+    return;
+  }
+  if (mseDeferTimer) clearTimeout(mseDeferTimer);
+  mseDeferTimer = setTimeout(() => {
+    mseDeferTimer = undefined;
+    sendCandidate({ url, kind: 'mse' }, el);
+  }, MSE_DEFER_MS);
+};
+const cancelMseSend = () => {
+  if (mseDeferTimer) {
+    clearTimeout(mseDeferTimer);
+    mseDeferTimer = undefined;
+  }
+};
+
 const collectFromElement = (el: HTMLMediaElement) => {
   const urls = new Set<string>();
   let blobSrc: string | undefined;
@@ -351,9 +384,14 @@ const collectFromElement = (el: HTMLMediaElement) => {
     // direct srcObject) and we can't fetch it. Register an MSE label so the
     // UI shows the media instead of silently dropping it. The download action
     // is blocked downstream.
-    sendCandidate({ url: `mse:${window.location.href}`, kind: 'mse' }, el);
+    scheduleMseSend(`mse:${window.location.href}`, el);
     return;
   }
+
+  // A real (non-blob) source exists on this element — cancel any pending
+  // MSE send. This catches the JWPlayer-style case where the blob URL was
+  // attached first and a probe-able URL appears later.
+  cancelMseSend();
 
   urls.forEach(url => {
     const kind = deriveKindFromElement(el, url);
@@ -405,8 +443,23 @@ export const initMediaDetector = () => {
   // the player enters fullscreen or layout reflows.
   window.addEventListener('resize', scanMainVideoPresence, { passive: true });
 
-  window.addEventListener('pagehide', () => {
-    publishMainVideoPresence(false);
-    chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.CLEAR_TAB }).catch(() => undefined);
-  });
+  // Only the top frame should signal pagehide/CLEAR_TAB. Sub-frames (JWPlayer
+  // ad containers, embedded players, etc.) unload independently during normal
+  // playback — e.g. when a pre-roll ad iframe is destroyed — and we mustn't
+  // wipe the parent tab's detections (the real HLS source) when that happens.
+  const isTopFrame = (() => {
+    try {
+      return window.top === window;
+    } catch {
+      // Cross-origin top access throws — we're in a sub-frame.
+      return false;
+    }
+  })();
+
+  if (isTopFrame) {
+    window.addEventListener('pagehide', () => {
+      publishMainVideoPresence(false);
+      chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.CLEAR_TAB }).catch(() => undefined);
+    });
+  }
 };
