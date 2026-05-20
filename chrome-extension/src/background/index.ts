@@ -97,6 +97,27 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
       sendResponse(result);
       return;
     }
+    if (msg.type === MEDIA_MESSAGE.PICKER_START) {
+      const tabId = msg.payload?.tabId ?? sender.tab?.id;
+      if (tabId === undefined) {
+        sendResponse({ ok: false, error: 'No active tab' });
+        return;
+      }
+      try {
+        await chrome.tabs.sendMessage(tabId, { type: MEDIA_MESSAGE.PICKER_ACTIVATE });
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.PICKER_PICKED) {
+      const tabId = sender.tab?.id;
+      const pageUrl = sender.tab?.url;
+      const result = await classifyAndAddUrl(msg.payload.url, tabId, pageUrl);
+      sendResponse(result);
+      return;
+    }
     // Play / Show in folder for completed downloads
     if (message.type === 'media/open' && typeof message.downloadId === 'number') {
       chrome.downloads.open(message.downloadId);
@@ -246,6 +267,18 @@ const createContextMenus = () => {
 
 chrome.runtime.onInstalled.addListener(createContextMenus);
 chrome.runtime.onStartup.addListener(createContextMenus);
+
+// ─── Hotkey: Alt+Shift+V activates the element picker on the active tab ───
+chrome.commands.onCommand.addListener(async command => {
+  if (command !== 'activate-picker') return;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: MEDIA_MESSAGE.PICKER_ACTIVATE });
+  } catch {
+    // Tab may not have a content script (chrome://, web store, etc.)
+  }
+});
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === 'download-media') {

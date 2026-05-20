@@ -114,6 +114,15 @@ const manifest = {
   side_panel: {
     default_path: 'side-panel/index.html',
   },
+  commands: {
+    'activate-picker': {
+      suggested_key: {
+        default: 'Alt+Shift+V',
+        mac: 'Alt+Shift+V',
+      },
+      description: 'Pick a video on the current page',
+    },
+  },
 } satisfies ManifestType;
 
 export default manifest;

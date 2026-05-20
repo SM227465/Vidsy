@@ -120,6 +120,9 @@ export const MEDIA_MESSAGE = {
   CLEAR_DOWNLOADS: 'media/clear-downloads',
   MAIN_VIDEO_PRESENT: 'media/main-video-present',
   PASTE_URL: 'media/paste-url',
+  PICKER_START: 'picker/start',
+  PICKER_ACTIVATE: 'picker/activate',
+  PICKER_PICKED: 'picker/picked',
 } as const;
 
 export type MediaMessage =
@@ -149,6 +152,9 @@ export type MediaMessage =
   | { type: typeof MEDIA_MESSAGE.CANCEL; payload: { url: string; intent?: 'pause' | 'cancel' } }
   | { type: typeof MEDIA_MESSAGE.CLEAR_DOWNLOADS; payload?: { keys?: string[] } }
   | { type: typeof MEDIA_MESSAGE.MAIN_VIDEO_PRESENT; payload: { present: boolean } }
-  | { type: typeof MEDIA_MESSAGE.PASTE_URL; payload: { url: string; tabId?: number } };
+  | { type: typeof MEDIA_MESSAGE.PASTE_URL; payload: { url: string; tabId?: number } }
+  | { type: typeof MEDIA_MESSAGE.PICKER_START; payload?: { tabId?: number } }
+  | { type: typeof MEDIA_MESSAGE.PICKER_ACTIVATE }
+  | { type: typeof MEDIA_MESSAGE.PICKER_PICKED; payload: { url: string } };
 
 export type PasteUrlResult = { ok: true; kind: MediaKind } | { ok: false; error: string };
