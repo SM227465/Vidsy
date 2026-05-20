@@ -189,3 +189,12 @@ export const renderFilenameTemplate = (template: string, ctx: FilenameTemplateCo
 };
 
 export const FILENAME_TOKEN_HINT = '{title} {resolution} {ext} {kind} {host} {date}';
+
+// True when the item's source URL is something a mobile browser can fetch and
+// play directly (no HLS/DASH muxing, no separate audio track to merge). Used
+// to decide whether to show a "Share to mobile" QR action.
+export const isMobileShareableUrl = (item: Pick<MediaItem, 'kind' | 'url' | 'audioUrl'>): boolean => {
+  if (item.kind !== 'video' && item.kind !== 'audio') return false;
+  if (item.audioUrl) return false; // separate audio track — mobile can't merge
+  return /^https?:\/\//i.test(item.url);
+};

@@ -8,3 +8,4 @@ export * from './MediaCard';
 export * from './DownloadRow';
 export * from './BottomBar';
 export * from './FilenameTemplateField';
+export * from './QrCodeModal';

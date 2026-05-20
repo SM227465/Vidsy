@@ -1,16 +1,18 @@
 import { DownloadProgress } from './DownloadProgress';
 import { IconDownload, IconX, IconEdit, IconMoreVert, IconVideo, IconPlay, IconFolder, IconLock } from './icons';
 import { MenuItem } from './MenuItem';
+import { QrCodeModal } from './QrCodeModal';
 import { cn } from '../../utils';
 import {
   MEDIA_MESSAGE,
+  isMobileShareableUrl,
   kindBadgeColor,
   mediaBadgeLabel,
   pickBestVariant,
   shortEdgeLabel,
   formatDuration,
 } from '@extension/shared';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type {
   DownloadState,
   SubtitleTrack,
@@ -60,6 +62,8 @@ export const MediaCard = ({
   onDismiss: () => void;
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const canShareToMobile = isMobileShareableUrl(item);
 
   useEffect(() => {
     if (moreMenuId !== item.id) return;
@@ -373,6 +377,16 @@ export const MediaCard = ({
                     ) : null}
                     <div className={cn('mx-2 my-1 border-t', isLight ? 'border-gray-100' : 'border-white/[0.06]')} />
                     <MenuItem label="Copy URL" onClick={() => copyUrl(item.url)} isLight={isLight} />
+                    {canShareToMobile ? (
+                      <MenuItem
+                        label="Share to mobile"
+                        onClick={() => {
+                          setMoreMenuId(null);
+                          setShareOpen(true);
+                        }}
+                        isLight={isLight}
+                      />
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -380,6 +394,14 @@ export const MediaCard = ({
           )}
         </div>
       </div>
+
+      <QrCodeModal
+        open={shareOpen}
+        url={item.url}
+        title={item.title}
+        onClose={() => setShareOpen(false)}
+        isLight={isLight}
+      />
     </div>
   );
 };
