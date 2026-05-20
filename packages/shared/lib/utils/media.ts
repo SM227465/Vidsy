@@ -61,6 +61,7 @@ export type MediaItem = {
 };
 
 export type MediaDownloadStage =
+  | 'queued'
   | 'init'
   | 'fetch-manifest'
   | 'download-video'
@@ -84,6 +85,7 @@ export type MediaDownloadProgress = {
   outputFormat?: 'mp4' | 'mp3'; // remembered so Retry reuses the original choice
   startedAt?: number;
   updatedAt?: number;
+  queuePosition?: number; // 1-based, shown when stage === 'queued'
 };
 
 export type MediaDownloadState = Record<string, MediaDownloadProgress>;

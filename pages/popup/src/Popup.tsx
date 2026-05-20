@@ -68,8 +68,22 @@ const Popup = () => {
   } = useMediaPage();
   const [pasteOpen, setPasteOpen] = useState(false);
 
-  const downloadList = Object.values(downloads).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-  const ACTIVE_STAGES = new Set(['init', 'fetch-manifest', 'download-video', 'download-audio', 'mux', 'finalize']);
+  const ACTIVE_STAGES = new Set([
+    'queued',
+    'init',
+    'fetch-manifest',
+    'download-video',
+    'download-audio',
+    'mux',
+    'finalize',
+  ]);
+  // Sort: queued (by position) → running → terminal (newest first)
+  const downloadList = Object.values(downloads).sort((a, b) => {
+    if (a.stage === 'queued' && b.stage === 'queued') return (a.queuePosition ?? 0) - (b.queuePosition ?? 0);
+    if (a.stage === 'queued') return 1;
+    if (b.stage === 'queued') return -1;
+    return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+  });
   const activeDownloadCount = downloadList.filter(d => ACTIVE_STAGES.has(d.stage)).length;
   const hasTerminalEntries = downloadList.some(d => !ACTIVE_STAGES.has(d.stage));
 

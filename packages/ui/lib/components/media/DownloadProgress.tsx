@@ -26,6 +26,7 @@ export const DownloadProgress = ({ progress, isLight }: { progress: MediaDownloa
   const isFinalizing = progress.stage === 'finalize';
   const isFailed = progress.stage === 'failed';
   const isCancelled = progress.stage === 'cancelled';
+  const isQueued = progress.stage === 'queued';
   const isActive = !isFailed && !isCancelled;
   const isPostDownload = isMuxing || isFinalizing;
 
@@ -44,42 +45,58 @@ export const DownloadProgress = ({ progress, isLight }: { progress: MediaDownloa
       ? isLight
         ? 'bg-red-400'
         : 'bg-red-500'
-      : isPostDownload
+      : isQueued
         ? isLight
-          ? 'bg-amber-400'
-          : 'bg-amber-500'
-        : 'bg-blue-500';
+          ? 'bg-gray-300'
+          : 'bg-white/[0.12]'
+        : isPostDownload
+          ? isLight
+            ? 'bg-amber-400'
+            : 'bg-amber-500'
+          : 'bg-blue-500';
 
   const label = isCancelled
     ? 'Cancelled'
     : isFailed && progress.error
       ? progress.error.slice(0, 30)
-      : isMuxing
-        ? pct !== undefined
-          ? `Processing ${pct}%`
-          : 'Processing...'
-        : isFinalizing
-          ? 'Saving...'
-          : pct !== undefined
-            ? `${pct}%`
-            : progress.stage;
+      : isQueued
+        ? progress.queuePosition && progress.queuePosition > 1
+          ? `Queued · #${progress.queuePosition}`
+          : 'Queued'
+        : isMuxing
+          ? pct !== undefined
+            ? `Processing ${pct}%`
+            : 'Processing...'
+          : isFinalizing
+            ? 'Saving...'
+            : pct !== undefined
+              ? `${pct}%`
+              : progress.stage;
 
-  const speedText = speed > 0 && isActive && !isPostDownload ? formatSpeed(speed) : '';
+  const speedText = speed > 0 && isActive && !isPostDownload && !isQueued ? formatSpeed(speed) : '';
 
   return (
     <div className={cn('relative h-5 w-full overflow-hidden rounded-md', isLight ? 'bg-gray-200' : 'bg-white/[0.06]')}>
       <div
         className={cn('absolute inset-y-0 left-0 rounded-md transition-[width] duration-300', barColor)}
         style={{
-          width: pct !== undefined ? `${pct}%` : isActive ? '100%' : '0%',
-          opacity: pct === undefined && isActive ? 0.3 : 1,
+          width: isQueued ? '100%' : pct !== undefined ? `${pct}%` : isActive ? '100%' : '0%',
+          opacity: isQueued ? 1 : pct === undefined && isActive ? 0.3 : 1,
         }}
       />
       <div className="relative flex h-full items-center justify-between px-2">
         <span
           className={cn(
             'text-[10px] font-semibold leading-none',
-            isActive ? 'text-white drop-shadow-sm' : isLight ? 'text-red-700' : 'text-red-400',
+            isQueued
+              ? isLight
+                ? 'text-gray-600'
+                : 'text-gray-300'
+              : isActive
+                ? 'text-white drop-shadow-sm'
+                : isLight
+                  ? 'text-red-700'
+                  : 'text-red-400',
           )}>
           {label}
         </span>
