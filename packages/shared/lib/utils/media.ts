@@ -119,6 +119,7 @@ export const MEDIA_MESSAGE = {
   CANCEL: 'media/cancel',
   CLEAR_DOWNLOADS: 'media/clear-downloads',
   MAIN_VIDEO_PRESENT: 'media/main-video-present',
+  PASTE_URL: 'media/paste-url',
 } as const;
 
 export type MediaMessage =
@@ -147,4 +148,7 @@ export type MediaMessage =
   | { type: typeof MEDIA_MESSAGE.CLEAR_TAB; payload?: { tabId?: number } }
   | { type: typeof MEDIA_MESSAGE.CANCEL; payload: { url: string; intent?: 'pause' | 'cancel' } }
   | { type: typeof MEDIA_MESSAGE.CLEAR_DOWNLOADS; payload?: { keys?: string[] } }
-  | { type: typeof MEDIA_MESSAGE.MAIN_VIDEO_PRESENT; payload: { present: boolean } };
+  | { type: typeof MEDIA_MESSAGE.MAIN_VIDEO_PRESENT; payload: { present: boolean } }
+  | { type: typeof MEDIA_MESSAGE.PASTE_URL; payload: { url: string; tabId?: number } };
+
+export type PasteUrlResult = { ok: true; kind: MediaKind } | { ok: false; error: string };

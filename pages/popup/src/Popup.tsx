@@ -1,4 +1,5 @@
 import { Header } from './components/Header';
+import { PasteUrlRow } from './components/PasteUrlRow';
 import { SettingCard, SettingRow } from './components/SettingCard';
 import { SkeletonFallback, ErrorFallback } from './components/SkeletonFallback';
 import { useMediaPage } from './hooks/useMediaPage';
@@ -13,6 +14,7 @@ import {
   IconCheck,
   IconDownload,
   IconHistory,
+  IconLink,
   IconMoon,
   IconSidePanel,
   IconSun,
@@ -25,9 +27,11 @@ import {
   SkeletonCard,
   Toggle,
 } from '@extension/ui';
+import { useState } from 'react';
 
 const Popup = () => {
   const {
+    tabId,
     currentMedia,
     isLoading,
     downloadState,
@@ -61,6 +65,7 @@ const Popup = () => {
     textMuted,
     hoverBg,
   } = useMediaPage();
+  const [pasteOpen, setPasteOpen] = useState(false);
 
   const downloadList = Object.values(downloads).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
   const ACTIVE_STAGES = new Set(['init', 'fetch-manifest', 'download-video', 'download-audio', 'mux', 'finalize']);
@@ -69,6 +74,21 @@ const Popup = () => {
 
   const popupActions = (
     <>
+      <button
+        className={cn(
+          'rounded-lg p-2 transition',
+          pasteOpen
+            ? isLight
+              ? 'bg-blue-100 text-blue-600'
+              : 'bg-blue-500/15 text-blue-400'
+            : isLight
+              ? 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+              : 'text-gray-500 hover:bg-white/[0.06] hover:text-gray-300',
+        )}
+        title="Add URL"
+        onClick={() => setPasteOpen(o => !o)}>
+        <IconLink />
+      </button>
       <button
         className={cn(
           'rounded-lg p-2 transition',
@@ -310,6 +330,8 @@ const Popup = () => {
           </button>
         </div>
       ) : null}
+
+      {pasteOpen ? <PasteUrlRow isLight={isLight} tabId={tabId} onClose={() => setPasteOpen(false)} /> : null}
 
       <div className="flex-1 overflow-y-auto">
         {isLoading ? (

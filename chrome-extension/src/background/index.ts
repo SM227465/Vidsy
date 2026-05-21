@@ -4,6 +4,7 @@ import { handleNetworkDetection, upsertDetection, clearTabDetections, setMainVid
 import { handleDownload, pauseDownload, cancelDownload } from './lib/download';
 import { setupHeaderCapture, cleanupStaleDnrRules } from './lib/header-capture';
 import { deriveKind, deriveFileName } from './lib/media-utils';
+import { classifyAndAddUrl } from './lib/paste-url';
 import { updateProgress, clearProgress, clearTerminalProgress } from './lib/progress';
 import { MEDIA_MESSAGE } from '@extension/shared';
 import type { MediaMessage } from '@extension/shared';
@@ -79,6 +80,21 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
       const tabId = sender.tab?.id;
       if (tabId !== undefined) setMainVideoPresent(tabId, msg.payload.present);
       sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.PASTE_URL) {
+      const tabId = msg.payload.tabId ?? sender.tab?.id;
+      let pageUrl: string | undefined = sender.tab?.url;
+      if (tabId !== undefined && !pageUrl) {
+        try {
+          const tab = await chrome.tabs.get(tabId);
+          pageUrl = tab.url;
+        } catch {
+          // Tab may be gone — proceed without pageUrl
+        }
+      }
+      const result = await classifyAndAddUrl(msg.payload.url, tabId, pageUrl);
+      sendResponse(result);
       return;
     }
     // Play / Show in folder for completed downloads
@@ -206,29 +222,69 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 });
 
 // ─── Context menu ───
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: 'download-media',
-    title: 'Download media',
-    contexts: ['video', 'audio'],
-  });
-});
+const createContextMenus = () => {
+  // Idempotent — re-creating on service-worker restart throws "duplicate id".
+  try {
+    chrome.contextMenus.create({
+      id: 'download-media',
+      title: 'Download media',
+      contexts: ['video', 'audio'],
+    });
+  } catch {
+    // Already registered
+  }
+  try {
+    chrome.contextMenus.create({
+      id: 'send-link-to-vidsy',
+      title: 'Send link to Vidsy',
+      contexts: ['link'],
+    });
+  } catch {
+    // Already registered
+  }
+};
+
+chrome.runtime.onInstalled.addListener(createContextMenus);
+chrome.runtime.onStartup.addListener(createContextMenus);
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId !== 'download-media') return;
-  const srcUrl = info.srcUrl;
-  if (!srcUrl) return;
-  const kind = deriveKind(srcUrl);
-  if (kind === 'video' || kind === 'audio') {
-    void handleDownload({
-      url: srcUrl,
-      kind,
-      fileName: deriveFileName(srcUrl, tab?.title),
-      title: tab?.title,
-      tabId: tab?.id,
-    });
-  } else {
-    void upsertDetection({ url: srcUrl, kind, source: 'element' }, tab?.id, tab?.url);
+  if (info.menuItemId === 'download-media') {
+    const srcUrl = info.srcUrl;
+    if (!srcUrl) return;
+    const kind = deriveKind(srcUrl);
+    if (kind === 'video' || kind === 'audio') {
+      void handleDownload({
+        url: srcUrl,
+        kind,
+        fileName: deriveFileName(srcUrl, tab?.title),
+        title: tab?.title,
+        tabId: tab?.id,
+      });
+    } else {
+      void upsertDetection({ url: srcUrl, kind, source: 'element' }, tab?.id, tab?.url);
+    }
+    return;
+  }
+  if (info.menuItemId === 'send-link-to-vidsy') {
+    const linkUrl = info.linkUrl;
+    if (!linkUrl) return;
+    void (async () => {
+      const result = await classifyAndAddUrl(linkUrl, tab?.id, tab?.url);
+      if (result.ok) {
+        // Item is now in the per-tab detected list and the badge counter has
+        // bumped automatically (see upsertDetection -> updateBadge). Try to
+        // open the popup so the user lands on the result immediately.
+        try {
+          await chrome.action.openPopup();
+        } catch {
+          // openPopup() requires a recent user gesture in some Chrome
+          // versions. The badge already signals the new item — user can
+          // click the icon to open.
+        }
+      } else {
+        console.warn('[Vidsy] Send link to Vidsy:', result.error);
+      }
+    })();
   }
 });
 
