@@ -7,6 +7,11 @@ if [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     # Parse the version from package.json
     current_version=$(grep -o "\"version\": \"[^\"]*" "$0" | cut -d"\"" -f4)
 
+    # Skip files without a "version" field — an empty pattern in perl
+    # substitution matches every position and prepends the new version to
+    # every character, corrupting the file.
+    [ -z "$current_version" ] && exit 0
+
     # Update the version
     perl -i -pe"s/$current_version/'$1'/" "$0"
   '  {} \;
