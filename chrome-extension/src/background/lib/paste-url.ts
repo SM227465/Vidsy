@@ -14,6 +14,11 @@ const PAGE_HOSTS_NOT_SUPPORTED = new Set([
   'music.youtube.com',
 ]);
 
+// Hostnames that serve YouTube media CDN URLs. Even if a user obtains a direct
+// videoplayback URL elsewhere, we won't download it — CWS content policies
+// forbid facilitating YouTube downloads regardless of the entry point.
+const SUFFIX_HOSTS_NOT_SUPPORTED = ['.googlevideo.com', '.youtube.com'];
+
 const hostOf = (url: string): string | null => {
   try {
     return new URL(url).hostname.toLowerCase();
@@ -69,6 +74,9 @@ export const classifyAndAddUrl = async (url: string, tabId?: number, pageUrl?: s
 
   const host = hostOf(trimmed);
   if (host && PAGE_HOSTS_NOT_SUPPORTED.has(host)) {
+    return { ok: false, error: 'Vidsy cannot download from this site (Chrome Web Store rule)' };
+  }
+  if (host && SUFFIX_HOSTS_NOT_SUPPORTED.some(suffix => host.endsWith(suffix))) {
     return { ok: false, error: 'Vidsy cannot download from this site (Chrome Web Store rule)' };
   }
 

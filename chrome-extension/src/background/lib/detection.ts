@@ -785,37 +785,13 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
   const contentLengthHeader = details.responseHeaders?.find(h => h.name.toLowerCase() === 'content-length')?.value;
   const contentLength = contentLengthHeader ? Number(contentLengthHeader) : undefined;
 
-  // ── YouTube: intercept videoplayback segments and register each quality level once ──
-  // YouTube MSE fetches byte-range chunks for each itag. Strip range params to get the
-  // full-video base URL, then deduplicate by that URL across chunks.
+  // ── Skip YouTube CDN: per CWS content policies, the extension must not
+  //    facilitate downloading copyrighted content from YouTube. Drop any
+  //    googlevideo.com (or YT-domain) media so it never surfaces in the UI.
   try {
     const urlObj = new URL(url);
-    if (urlObj.hostname.endsWith('.googlevideo.com') && urlObj.pathname === '/videoplayback') {
-      const itag = urlObj.searchParams.get('itag');
-      if (!itag) return;
-      // Only detect combined audio+video itags to avoid flooding with separate adaptive tracks.
-      // 18 = 360p MP4, 22 = 720p MP4, 59 = 480p MP4, 78 = 480p MP4
-      const COMBINED_ITAGS = new Set(['18', '22', '59', '78']);
-      if (!COMBINED_ITAGS.has(itag)) return;
-      // Derive a stable base URL by removing per-request byte-range parameters
-      for (const p of ['range', 'rn', 'rbuf', 'sq', 'rqh']) urlObj.searchParams.delete(p);
-      const baseUrl = urlObj.toString();
-      const seenSet = ensureSeenCache(tabId);
-      if (seenSet?.has(baseUrl)) return;
-      let pageUrl = details.initiator;
-      if (tabId !== undefined && tabId >= 0) {
-        try {
-          const tab = await chrome.tabs.get(tabId);
-          if (tab.url) pageUrl = tab.url;
-        } catch {
-          // tab may not exist
-        }
-      }
-      await upsertDetection(
-        { url: baseUrl, kind: 'video', mimeType: contentType ?? 'video/mp4', source: 'network' },
-        tabId,
-        pageUrl,
-      );
+    const host = urlObj.hostname;
+    if (host.endsWith('.googlevideo.com') || host === 'youtube.com' || host.endsWith('.youtube.com')) {
       return;
     }
   } catch {
