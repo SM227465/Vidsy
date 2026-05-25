@@ -79,17 +79,6 @@ const manifest = {
       js: ['content/example.iife.js'],
     },
     {
-      matches: ['*://*.youtube.com/*'],
-      js: ['content/youtube.iife.js'],
-      run_at: 'document_idle',
-    },
-    {
-      matches: ['*://*.youtube.com/*'],
-      js: ['content/youtube_main.iife.js'],
-      run_at: 'document_start',
-      world: 'MAIN',
-    },
-    {
       matches: ['*://*.vimeo.com/*'],
       js: ['content/vimeo.iife.js'],
       run_at: 'document_idle',
