@@ -77,12 +77,17 @@ type MediaSettings = {
   enableHlsMerging: boolean;
   maxHistory: number;
   filenameTemplate: string;
+  // Max concurrent downloads through the queue. Default 1 — libav HLS/DASH
+  // muxes are RAM- and OPFS-bandwidth-heavy and running two simultaneously
+  // degrades both. Users with headroom can bump this from the options page.
+  downloadConcurrency: number;
 };
 
 const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
   enableHlsMerging: true,
   maxHistory: 30,
   filenameTemplate: '',
+  downloadConcurrency: 1,
 };
 
 export const mediaDetectionsStorage = createStorage<MediaDetectionState>(

@@ -1,10 +1,15 @@
 import { updateProgress, clearProgress } from './progress';
+import { mediaSettingsStorage } from '@extension/storage';
 import type { MediaItem, MediaMessage } from '@extension/shared';
 
-// Concurrency cap — keep at 1 by default. The libav mux holds significant
-// memory and OPFS bandwidth; running two simultaneously degrades both. Users
-// who explicitly want parallelism can bump this in a future setting.
-const CONCURRENCY = 1;
+// Concurrency is user-configurable via the options page (default 1). libav
+// HLS/DASH muxes are RAM- and OPFS-bandwidth-heavy; higher values trade
+// stability for throughput. Clamped to [1, 8].
+const readConcurrency = async (): Promise<number> => {
+  const settings = await mediaSettingsStorage.get();
+  const raw = settings.downloadConcurrency ?? 1;
+  return Math.max(1, Math.min(8, Math.floor(raw)));
+};
 
 type DownloadPayload = Extract<MediaMessage, { type: 'media/download' }>['payload'];
 type Runner = (payload: DownloadPayload) => Promise<unknown>;
@@ -35,7 +40,8 @@ const refreshQueuePositions = async () => {
 
 const drain = async (): Promise<void> => {
   if (!runner) return;
-  while (running.size < CONCURRENCY && pending.length > 0) {
+  const concurrency = await readConcurrency();
+  while (running.size < concurrency && pending.length > 0) {
     const job = pending.shift();
     if (!job) break;
     running.add(job.key);
