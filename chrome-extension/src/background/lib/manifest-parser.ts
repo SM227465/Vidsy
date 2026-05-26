@@ -1,28 +1,19 @@
 import { parseM3u8Attributes } from './media-utils';
 import type { MediaVariant } from '@extension/shared';
 
-export type ManifestParseResult = {
+type ManifestParseResult = {
   variants: MediaVariant[];
   isDrmProtected: boolean;
 };
 
-// HLS `METHOD=AES-128` is standard HTTP-delivered AES — not DRM, the segment fetcher
-// already handles it. SAMPLE-AES/SAMPLE-AES-CTR paired with a proprietary KEYFORMAT
-// (Widevine / PlayReady / FairPlay) is the DRM case we cannot decrypt.
-const DRM_KEY_FORMATS = [
-  'com.apple.streamingkeydelivery', // FairPlay
-  'com.widevine.alpha',
-  'com.microsoft.playready',
-  'urn:uuid:', // any proprietary DRM UUID scheme
-];
-
+// HLS `METHOD=AES-128` is standard HTTP-delivered envelope encryption — the
+// segment fetcher decrypts it. Anything else (SAMPLE-AES, SAMPLE-AES-CTR,
+// proprietary schemes with KEYFORMAT pointing at Widevine / PlayReady /
+// FairPlay / a uuid:) needs a key we can't obtain — treat as DRM.
 const isHlsKeyLineDrm = (attrsRaw: string): boolean => {
   const attrs = parseM3u8Attributes(attrsRaw);
   const method = (attrs.METHOD ?? '').toUpperCase();
-  if (method === 'NONE' || method === '' || method === 'AES-128') return false;
-  if (method === 'SAMPLE-AES' || method === 'SAMPLE-AES-CTR') return true;
-  const keyFormat = (attrs.KEYFORMAT ?? '').toLowerCase();
-  return DRM_KEY_FORMATS.some(fmt => keyFormat.includes(fmt));
+  return method !== 'NONE' && method !== '' && method !== 'AES-128';
 };
 
 export const parseHlsVariants = async (manifestUrl: string): Promise<ManifestParseResult> => {
@@ -85,16 +76,12 @@ export const parseDashVariants = async (manifestUrl: string): Promise<ManifestPa
     const parser = new DOMParser();
     const doc = parser.parseFromString(xml, 'application/xml');
 
-    // Any ContentProtection element with a non-generic schemeIdUri means DRM.
-    // The generic CENC marker (urn:mpeg:dash:mp4protection:2011) by itself only
-    // says "AES-CTR encrypted" — DRM requires a key system UUID alongside it.
-    const GENERIC_CENC = 'urn:mpeg:dash:mp4protection:2011';
+    // Any ContentProtection element means the content is encrypted. Even the
+    // generic CENC marker (urn:mpeg:dash:mp4protection:2011) alone implies
+    // AES-CTR with a key obtained out-of-band (browser EME) — we have no
+    // pathway to that key, so the resulting download would be corrupt.
     const contentProtections = Array.from(doc.querySelectorAll('ContentProtection'));
-    const isDrmProtected = contentProtections.some(el => {
-      const scheme = (el.getAttribute('schemeIdUri') ?? '').toLowerCase();
-      if (!scheme) return false;
-      return scheme !== GENERIC_CENC;
-    });
+    const isDrmProtected = contentProtections.some(el => Boolean(el.getAttribute('schemeIdUri')));
 
     const reps = Array.from(doc.querySelectorAll('Representation'));
     const variants = reps
@@ -123,3 +110,5 @@ export const parseDashVariants = async (manifestUrl: string): Promise<ManifestPa
     return { variants: [], isDrmProtected: false };
   }
 };
+
+export type { ManifestParseResult };
