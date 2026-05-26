@@ -4,8 +4,18 @@ import { downloadDashMuxed } from './lib/dash-download';
 import { downloadHlsMuxed } from './lib/hls-download';
 import { downloadHttpDirect } from './lib/http-download';
 import { downloadMerged } from './lib/merged-download';
+import { purgeOpfsOrphans } from './lib/opfs-gc';
 import { activeAbortControllers } from './lib/segment-fetcher';
 import { getOpfsFile, muxInWorker, removeOpfs } from './lib/worker-client';
+
+// Sweep orphaned OPFS files left over from a prior session (crash,
+// browser kill, extension reload). Fire-and-forget so the message
+// listener stays responsive for fresh downloads.
+void purgeOpfsOrphans().then(({ removed, failed }) => {
+  if (removed > 0 || failed > 0) {
+    console.log(`[Vidsy] OPFS GC: removed ${removed}, failed ${failed}`);
+  }
+});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'offscreen/cleanup-blob') {
