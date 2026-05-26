@@ -81,7 +81,15 @@ export const MediaCard = ({
 
   const isEditing = editingId === item.id;
   const isMenuOpen = moreMenuId === item.id;
-  const ACTIVE_STAGES = new Set(['init', 'fetch-manifest', 'download-video', 'download-audio', 'mux', 'finalize']);
+  const ACTIVE_STAGES = new Set([
+    'queued',
+    'init',
+    'fetch-manifest',
+    'download-video',
+    'download-audio',
+    'mux',
+    'finalize',
+  ]);
   const progress = downloads[item.url];
   const isBusy = downloadState.busyUrl === item.url || (progress != null && ACTIVE_STAGES.has(progress.stage));
   const isComplete = progress?.stage === 'success' && progress.downloadId;

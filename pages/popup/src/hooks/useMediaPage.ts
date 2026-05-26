@@ -1,5 +1,4 @@
 import { MEDIA_MESSAGE, useStorage, pickBestVariant } from '@extension/shared';
-import type { DownloadState } from '@extension/shared';
 import {
   mediaDetectionsStorage,
   mediaDownloadsStorage,
@@ -9,6 +8,7 @@ import {
 } from '@extension/storage';
 import { useEffect, useMemo, useState } from 'react';
 import type {
+  DownloadState,
   MediaDetectionState,
   MediaDownloadProgress,
   MediaHistoryItem,
@@ -57,6 +57,8 @@ export const useMediaPage = () => {
 
   useEffect(() => {
     if (downloadState.busyUrl) return;
+    // Note: 'queued' deliberately excluded so the popup doesn't peg busyUrl to a
+    // queued item — users should be able to start more downloads while one runs.
     const ACTIVE = new Set(['init', 'fetch-manifest', 'download-video', 'download-audio', 'mux', 'finalize']);
     const entry = Object.entries(downloads).find(([, p]) => ACTIVE.has(p.stage));
     if (entry) setDownloadState({ busyUrl: entry[0], error: null });
@@ -68,7 +70,7 @@ export const useMediaPage = () => {
     setDownloadState({ busyUrl: item.url, error: null });
     const chosenVariant =
       item.variants && item.variants.length > 0
-        ? item.variants.find(v => v.url === selectedVariants[item.id]) ?? item.variants[0]
+        ? (item.variants.find(v => v.url === selectedVariants[item.id]) ?? item.variants[0])
         : undefined;
     let chosenUrl = chosenVariant?.url ?? item.url;
     // Audio pairing for YouTube adaptive formats: prefer variant-level, fall back to item-level.

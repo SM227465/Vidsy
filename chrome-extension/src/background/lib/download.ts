@@ -1,3 +1,4 @@
+import { cancelQueued, enqueueDownload, setQueueRunner } from './download-queue';
 import { capturedRequestHeaders, injectHeadersForDownload, removeHeadersForDownload } from './header-capture';
 import { addHistoryEntry } from './history';
 import { dlLog } from './logger';
@@ -223,38 +224,10 @@ const downloadDashMuxed = async (
   return downloadId;
 };
 
-export const handleDownload = async (
-  payload: Extract<MediaMessage, { type: typeof MEDIA_MESSAGE.DOWNLOAD }>['payload'],
-) => {
-  dlLog('handleDownload: clicked download in popup', payload);
+type DownloadPayload = Extract<MediaMessage, { type: typeof MEDIA_MESSAGE.DOWNLOAD }>['payload'];
 
-  // Subtitle fast-path: small text blobs, no offscreen, no progress state, no headers.
-  // Route straight to chrome.downloads with a language-suffixed filename.
-  if (payload.kind === 'subtitle') {
-    try {
-      const format = payload.subtitleFormat ?? deriveSubtitleFormat(payload.url);
-      const downloadId = await downloadSubtitle(
-        payload.url,
-        payload.fileName,
-        payload.title,
-        payload.subtitleLang,
-        format,
-      );
-      return { ok: true, downloadId } as const;
-    } catch (error) {
-      dlLog('handleDownload: subtitle failed', error);
-      return { ok: false, error: error instanceof Error ? error.message : String(error) } as const;
-    }
-  }
-
-  // DRM pre-dispatch gate: manifest-parser flags DRM-protected variants at detection
-  // time. Reject before spinning up the offscreen doc / libav — libav has no CDM and
-  // the user will only see a cryptic mid-mux failure otherwise.
-  if (payload.item?.isDrmProtected) {
-    const msg = 'DRM-protected stream cannot be downloaded';
-    dlLog('handleDownload: DRM-protected, rejecting', payload.item);
-    return { ok: false, error: msg } as const;
-  }
+const runDownloadJob = async (payload: DownloadPayload) => {
+  dlLog('runDownloadJob: starting', payload);
 
   const settings = await mediaSettingsStorage.get();
 
@@ -376,6 +349,62 @@ export const handleDownload = async (
   }
 };
 
+// Register the queue runner now that runDownloadJob is defined. The queue
+// invokes this for each pending job when concurrency allows — see download-queue.ts.
+setQueueRunner(runDownloadJob);
+
+export const handleDownload = async (payload: DownloadPayload) => {
+  dlLog('handleDownload: enqueue request', payload);
+
+  // Subtitle fast-path: small text blobs, no offscreen, no progress state, no headers.
+  // Route straight to chrome.downloads with a language-suffixed filename. These don't
+  // belong in the long-running queue — they finish in milliseconds.
+  if (payload.kind === 'subtitle') {
+    try {
+      const format = payload.subtitleFormat ?? deriveSubtitleFormat(payload.url);
+      const downloadId = await downloadSubtitle(
+        payload.url,
+        payload.fileName,
+        payload.title,
+        payload.subtitleLang,
+        format,
+      );
+      return { ok: true, downloadId } as const;
+    } catch (error) {
+      dlLog('handleDownload: subtitle failed', error);
+      return { ok: false, error: error instanceof Error ? error.message : String(error) } as const;
+    }
+  }
+
+  // DRM pre-dispatch gate: manifest-parser flags DRM-protected variants at detection
+  // time. Reject before queueing — there's no point making the user wait through the
+  // queue only to fail; we fail fast here.
+  if (payload.item?.isDrmProtected) {
+    const msg = 'DRM-protected stream cannot be downloaded';
+    dlLog('handleDownload: DRM-protected, rejecting', payload.item);
+    return { ok: false, error: msg } as const;
+  }
+
+  // Build a minimal MediaItem snapshot for the queue UI. Full filename templating
+  // and metadata expansion happens inside runDownloadJob when this job becomes
+  // active — keeps the enqueue path cheap.
+  const queuedItem: MediaItem = payload.item
+    ? { ...payload.item, tabId: payload.tabId ?? payload.item.tabId }
+    : {
+        id: createId(),
+        url: payload.url,
+        kind: payload.kind ?? deriveKind(payload.url, undefined),
+        detectedAt: Date.now(),
+        source: 'network',
+        title: payload.title,
+        fileName: payload.fileName,
+        tabId: payload.tabId,
+      };
+
+  await enqueueDownload(payload, queuedItem);
+  return { ok: true, queued: true } as const;
+};
+
 export const pauseDownload = (key: string) => {
   pauseIntents.add(key);
   chrome.runtime.sendMessage({ type: 'offscreen/cancel', payload: { key } }).catch(() => undefined);
@@ -383,5 +412,8 @@ export const pauseDownload = (key: string) => {
 
 export const cancelDownload = (key: string) => {
   pauseIntents.delete(key);
+  // If the job is still queued (not yet running), remove it from the queue and
+  // clear progress. Otherwise the offscreen cancel below aborts the running mux.
+  void cancelQueued(key);
   chrome.runtime.sendMessage({ type: 'offscreen/cancel', payload: { key } }).catch(() => undefined);
 };
