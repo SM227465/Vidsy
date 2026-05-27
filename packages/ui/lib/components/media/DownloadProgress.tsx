@@ -1,3 +1,4 @@
+import { IconClock } from './icons';
 import { cn } from '../../utils';
 import { formatSpeed } from '@extension/shared';
 import { useEffect, useRef, useState } from 'react';
@@ -88,6 +89,7 @@ export const DownloadProgress = ({ progress, isLight }: { progress: MediaDownloa
         <span
           className={cn(
             'text-[10px] font-semibold leading-none',
+            isQueued && 'flex items-center gap-1',
             isQueued
               ? isLight
                 ? 'text-gray-600'
@@ -98,6 +100,7 @@ export const DownloadProgress = ({ progress, isLight }: { progress: MediaDownloa
                   ? 'text-red-700'
                   : 'text-red-400',
           )}>
+          {isQueued ? <IconClock /> : null}
           {label}
         </span>
         {speedText ? (

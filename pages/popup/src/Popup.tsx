@@ -56,6 +56,7 @@ const Popup = () => {
     onPause,
     onRetry,
     onClearDownloads,
+    onReorder,
     clearTabDetections,
     copyUrl,
     startEdit,
@@ -239,17 +240,22 @@ const Popup = () => {
             />
           ) : (
             <div className="space-y-px">
-              {downloadList.map(entry => (
-                <DownloadRow
-                  key={entry.key}
-                  entry={entry}
-                  isLight={isLight}
-                  onRetry={onRetry}
-                  onPause={onPause}
-                  onCancel={onCancel}
-                  onRemove={k => onClearDownloads([k])}
-                />
-              ))}
+              {(() => {
+                const queueTotal = downloadList.filter(e => e.stage === 'queued').length;
+                return downloadList.map(entry => (
+                  <DownloadRow
+                    key={entry.key}
+                    entry={entry}
+                    isLight={isLight}
+                    onRetry={onRetry}
+                    onPause={onPause}
+                    onCancel={onCancel}
+                    onRemove={k => onClearDownloads([k])}
+                    onReorder={onReorder}
+                    queueTotal={queueTotal}
+                  />
+                ));
+              })()}
             </div>
           )}
         </div>

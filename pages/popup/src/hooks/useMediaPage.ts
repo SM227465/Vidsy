@@ -127,6 +127,10 @@ export const useMediaPage = () => {
     await chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.CLEAR_DOWNLOADS, payload: { keys } });
   };
 
+  const onReorder = async (key: string, direction: 'up' | 'down') => {
+    await chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.QUEUE_REORDER, payload: { key, direction } });
+  };
+
   const clearTabDetections = () => {
     if (!tabId) return;
     chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.CLEAR_TAB, payload: { tabId } }).catch(() => undefined);
@@ -179,6 +183,7 @@ export const useMediaPage = () => {
     onPause,
     onRetry,
     onClearDownloads,
+    onReorder,
     clearTabDetections,
     copyUrl,
     startEdit,
