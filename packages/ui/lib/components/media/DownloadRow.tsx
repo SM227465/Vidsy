@@ -1,5 +1,15 @@
 import { DownloadProgress } from './DownloadProgress';
-import { IconFolder, IconPause, IconPlay, IconRefresh, IconTrash, IconVideo, IconX } from './icons';
+import {
+  IconChevronDown,
+  IconChevronUp,
+  IconFolder,
+  IconPause,
+  IconPlay,
+  IconRefresh,
+  IconTrash,
+  IconVideo,
+  IconX,
+} from './icons';
 import { cn } from '../../utils';
 import { formatDuration } from '@extension/shared';
 import type { MediaDownloadProgress } from '@extension/shared';
@@ -21,6 +31,8 @@ export const DownloadRow = ({
   onPause,
   onCancel,
   onRemove,
+  onReorder,
+  queueTotal,
 }: {
   entry: MediaDownloadProgress;
   isLight: boolean;
@@ -28,6 +40,8 @@ export const DownloadRow = ({
   onPause: (key: string) => void;
   onCancel: (key: string) => void;
   onRemove: (key: string) => void;
+  onReorder?: (key: string, direction: 'up' | 'down') => void;
+  queueTotal?: number;
 }) => {
   const item = entry.item;
   const isActive = ACTIVE_STAGES.has(entry.stage);
@@ -41,8 +55,17 @@ export const DownloadRow = ({
   const displayName = item?.title?.trim() || (item?.fileName ?? entry.key).replace(/\.[^.]+$/, '').replace(/_/g, ' ');
   const durationStr = item?.duration ? formatDuration(item.duration) : '';
 
+  const queuePos = entry.queuePosition ?? 0;
+  const canMoveUp = isQueued && queuePos > 1;
+  const canMoveDown = isQueued && queueTotal !== undefined && queuePos < queueTotal;
+
   return (
-    <div className={cn('group relative px-4 py-3 transition', isLight ? 'hover:bg-gray-50' : 'hover:bg-white/[0.02]')}>
+    <div
+      className={cn(
+        'group relative px-4 py-3 transition',
+        isQueued && 'opacity-70',
+        isLight ? 'hover:bg-gray-50' : 'hover:bg-white/[0.02]',
+      )}>
       <div className="flex gap-3">
         <div
           className={cn(
@@ -92,6 +115,34 @@ export const DownloadRow = ({
               <div className="min-w-0 flex-1">
                 <DownloadProgress progress={entry} isLight={isLight} />
               </div>
+              {isQueued && onReorder ? (
+                <>
+                  <button
+                    className={cn(
+                      'shrink-0 rounded-md p-1 transition disabled:cursor-not-allowed disabled:opacity-40',
+                      isLight
+                        ? 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        : 'bg-white/[0.06] text-gray-300 hover:bg-white/[0.1]',
+                    )}
+                    title="Move up in queue"
+                    disabled={!canMoveUp}
+                    onClick={() => onReorder(entry.key, 'up')}>
+                    <IconChevronUp />
+                  </button>
+                  <button
+                    className={cn(
+                      'shrink-0 rounded-md p-1 transition disabled:cursor-not-allowed disabled:opacity-40',
+                      isLight
+                        ? 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        : 'bg-white/[0.06] text-gray-300 hover:bg-white/[0.1]',
+                    )}
+                    title="Move down in queue"
+                    disabled={!canMoveDown}
+                    onClick={() => onReorder(entry.key, 'down')}>
+                    <IconChevronDown />
+                  </button>
+                </>
+              ) : null}
               {isQueued ? null : (
                 <button
                   className={cn(

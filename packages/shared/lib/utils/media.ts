@@ -125,6 +125,7 @@ export const MEDIA_MESSAGE = {
   PICKER_START: 'picker/start',
   PICKER_ACTIVATE: 'picker/activate',
   PICKER_PICKED: 'picker/picked',
+  QUEUE_REORDER: 'media/queue-reorder',
 } as const;
 
 export type MediaMessage =
@@ -157,6 +158,7 @@ export type MediaMessage =
   | { type: typeof MEDIA_MESSAGE.PASTE_URL; payload: { url: string; tabId?: number } }
   | { type: typeof MEDIA_MESSAGE.PICKER_START; payload?: { tabId?: number } }
   | { type: typeof MEDIA_MESSAGE.PICKER_ACTIVATE }
-  | { type: typeof MEDIA_MESSAGE.PICKER_PICKED; payload: { url: string } };
+  | { type: typeof MEDIA_MESSAGE.PICKER_PICKED; payload: { url: string } }
+  | { type: typeof MEDIA_MESSAGE.QUEUE_REORDER; payload: { key: string; direction: 'up' | 'down' } };
 
 export type PasteUrlResult = { ok: true; kind: MediaKind } | { ok: false; error: string };

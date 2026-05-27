@@ -2,6 +2,7 @@
 import 'webextension-polyfill';
 import { handleNetworkDetection, upsertDetection, clearTabDetections, setMainVideoPresent } from './lib/detection';
 import { handleDownload, pauseDownload, cancelDownload } from './lib/download';
+import { reorderQueueItem } from './lib/download-queue';
 import { setupHeaderCapture, cleanupStaleDnrRules } from './lib/header-capture';
 import { deriveKind, deriveFileName } from './lib/media-utils';
 import { classifyAndAddUrl } from './lib/paste-url';
@@ -74,6 +75,11 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
     if (msg.type === MEDIA_MESSAGE.CLEAR_DOWNLOADS) {
       await clearTerminalProgress(msg.payload?.keys);
       sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.QUEUE_REORDER) {
+      const ok = await reorderQueueItem(msg.payload.key, msg.payload.direction);
+      sendResponse({ ok });
       return;
     }
     if (msg.type === MEDIA_MESSAGE.MAIN_VIDEO_PRESENT) {

@@ -80,6 +80,16 @@ const cancelQueued = async (key: string): Promise<boolean> => {
   return true;
 };
 
+const reorderQueueItem = async (key: string, direction: 'up' | 'down'): Promise<boolean> => {
+  const idx = pending.findIndex(j => j.key === key);
+  if (idx === -1) return false;
+  const newIdx = direction === 'up' ? idx - 1 : idx + 1;
+  if (newIdx < 0 || newIdx >= pending.length) return false;
+  [pending[idx], pending[newIdx]] = [pending[newIdx], pending[idx]];
+  await refreshQueuePositions();
+  return true;
+};
+
 const setQueueRunner = (fn: Runner) => {
   runner = fn;
 };
@@ -90,4 +100,4 @@ const queueState = () => ({
   running: Array.from(running),
 });
 
-export { cancelQueued, enqueueDownload, queueState, setQueueRunner };
+export { cancelQueued, enqueueDownload, queueState, reorderQueueItem, setQueueRunner };
