@@ -16,7 +16,7 @@ import type {
   WorkerResponse,
 } from './messages';
 
-const MAX_CONCURRENT = 6;
+const MAX_CONCURRENT = 8;
 const MAX_RETRIES = 3;
 const SEGMENT_TIMEOUT_MS = 30_000;
 

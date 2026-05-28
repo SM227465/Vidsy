@@ -26,7 +26,18 @@ export const useMediaPage = () => {
   const [tabId, setTabId] = useState<number | null>(null);
   const [downloadState, setDownloadState] = useState<DownloadState>({ busyUrl: null, error: null });
   const [selectedVariants, setSelectedVariants] = useState<Record<string, string>>({});
-  const [view, setView] = useState<'main' | 'settings' | 'history' | 'downloads'>('main');
+  // Allow callers to deep-link to a specific view via URL hash, e.g. when the
+  // popup HTML is opened as a standalone window via chrome.windows.create
+  // (used by the download interceptor to show an IDM-style progress window).
+  type View = 'main' | 'settings' | 'history' | 'downloads' | 'idm-download';
+  const initialView = ((): View => {
+    if (typeof window === 'undefined') return 'main';
+    const hash = window.location.hash.replace('#', '');
+    if (hash === 'downloads' || hash === 'settings' || hash === 'history' || hash === 'main' || hash === 'idm-download')
+      return hash;
+    return 'main';
+  })();
+  const [view, setView] = useState<View>(initialView);
   const [moreMenuId, setMoreMenuId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');

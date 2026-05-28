@@ -81,6 +81,10 @@ type MediaSettings = {
   // muxes are RAM- and OPFS-bandwidth-heavy and running two simultaneously
   // degrades both. Users with headroom can bump this from the options page.
   downloadConcurrency: number;
+  // Intercept browser-initiated video/audio downloads and offer to handle them
+  // through Vidsy. Default ON — the modal lets the user choose "Open in
+  // Browser" per-download, and there's a settings toggle to disable entirely.
+  enableDownloadInterceptor: boolean;
 };
 
 const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
@@ -88,6 +92,7 @@ const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
   maxHistory: 30,
   filenameTemplate: '',
   downloadConcurrency: 1,
+  enableDownloadInterceptor: true,
 };
 
 export const mediaDetectionsStorage = createStorage<MediaDetectionState>(

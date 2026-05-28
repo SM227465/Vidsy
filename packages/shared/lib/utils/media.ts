@@ -126,6 +126,10 @@ export const MEDIA_MESSAGE = {
   PICKER_ACTIVATE: 'picker/activate',
   PICKER_PICKED: 'picker/picked',
   QUEUE_REORDER: 'media/queue-reorder',
+  INTERCEPT_SHOW: 'media/intercept-show',
+  INTERCEPT_DOWNLOAD_VIDSY: 'media/intercept-download-vidsy',
+  INTERCEPT_RESUME_BROWSER: 'media/intercept-resume-browser',
+  INTERCEPT_DISMISS: 'media/intercept-dismiss',
 } as const;
 
 export type MediaMessage =
@@ -159,6 +163,19 @@ export type MediaMessage =
   | { type: typeof MEDIA_MESSAGE.PICKER_START; payload?: { tabId?: number } }
   | { type: typeof MEDIA_MESSAGE.PICKER_ACTIVATE }
   | { type: typeof MEDIA_MESSAGE.PICKER_PICKED; payload: { url: string } }
-  | { type: typeof MEDIA_MESSAGE.QUEUE_REORDER; payload: { key: string; direction: 'up' | 'down' } };
+  | { type: typeof MEDIA_MESSAGE.QUEUE_REORDER; payload: { key: string; direction: 'up' | 'down' } }
+  | {
+      type: typeof MEDIA_MESSAGE.INTERCEPT_SHOW;
+      payload: {
+        url: string;
+        fileName?: string;
+        mime?: string;
+        fileSize?: number;
+        referrer?: string;
+      };
+    }
+  | { type: typeof MEDIA_MESSAGE.INTERCEPT_DOWNLOAD_VIDSY; payload: { url: string; fileName?: string } }
+  | { type: typeof MEDIA_MESSAGE.INTERCEPT_RESUME_BROWSER; payload: { url: string; fileName?: string } }
+  | { type: typeof MEDIA_MESSAGE.INTERCEPT_DISMISS; payload: { url: string } };
 
 export type PasteUrlResult = { ok: true; kind: MediaKind } | { ok: false; error: string };

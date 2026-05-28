@@ -2,6 +2,7 @@
 import 'webextension-polyfill';
 import { handleNetworkDetection, upsertDetection, clearTabDetections, setMainVideoPresent } from './lib/detection';
 import { handleDownload, pauseDownload, cancelDownload } from './lib/download';
+import { setupDownloadInterceptor, resumeBrowserDownload, openDownloadsWindow } from './lib/download-interceptor';
 import { reorderQueueItem } from './lib/download-queue';
 import { setupHeaderCapture, cleanupStaleDnrRules } from './lib/header-capture';
 import { deriveKind, deriveFileName } from './lib/media-utils';
@@ -22,6 +23,9 @@ setInterval(() => {
 // ─── Header capture & stale DNR cleanup ───
 setupHeaderCapture();
 cleanupStaleDnrRules();
+
+// ─── IDM-style download interceptor (opt-in via settings) ───
+setupDownloadInterceptor();
 
 // ─── Network detection listener ───
 chrome.webRequest.onResponseStarted.addListener(
@@ -80,6 +84,33 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
     if (msg.type === MEDIA_MESSAGE.QUEUE_REORDER) {
       const ok = await reorderQueueItem(msg.payload.key, msg.payload.direction);
       sendResponse({ ok });
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.INTERCEPT_DOWNLOAD_VIDSY) {
+      const tabId = sender.tab?.id;
+      const kind = deriveKind(msg.payload.url);
+      // Open the standalone IDM-style progress window BEFORE kicking off the
+      // download so the user immediately sees the queue, even if handleDownload
+      // takes a moment to resolve.
+      void openDownloadsWindow();
+      const result = await handleDownload({
+        url: msg.payload.url,
+        fileName: msg.payload.fileName ?? deriveFileName(msg.payload.url),
+        title: msg.payload.fileName,
+        tabId,
+        kind,
+      });
+      sendResponse(result);
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.INTERCEPT_RESUME_BROWSER) {
+      resumeBrowserDownload(msg.payload.url, msg.payload.fileName);
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.INTERCEPT_DISMISS) {
+      // Original download is already cancelled — nothing to do beyond ack.
+      sendResponse({ ok: true });
       return;
     }
     if (msg.type === MEDIA_MESSAGE.MAIN_VIDEO_PRESENT) {

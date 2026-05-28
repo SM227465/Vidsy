@@ -13,7 +13,7 @@ import {
 
 const MIN_SIZE_FOR_PARALLEL = 5 * 1024 * 1024; // 5 MB
 const TARGET_CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB per range request
-const MAX_PARALLEL_CHUNKS = 6;
+const MAX_PARALLEL_CHUNKS = 8;
 const PROBE_TIMEOUT_MS = 10_000;
 
 type RangeProbe = {

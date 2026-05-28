@@ -125,6 +125,50 @@ export const SettingsPanel = ({ isLight }: { isLight: boolean }) => {
 
         <div className={divider} />
 
+        {/* Browser download interceptor */}
+        <div className="flex items-center justify-between px-5 py-4">
+          <div className="flex items-center gap-3">
+            <div
+              className={cn(
+                'flex h-9 w-9 items-center justify-center rounded-xl',
+                isLight ? 'bg-rose-100 text-rose-600' : 'bg-rose-500/10 text-rose-400',
+              )}>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+            </div>
+            <div>
+              <p className={cn('text-sm font-medium', label)}>Catch browser downloads</p>
+              <p className={cn('text-xs', sub)}>
+                Offer to handle video/audio downloads through Vidsy instead of saving with the browser
+              </p>
+            </div>
+          </div>
+          <Toggle
+            checked={settings?.enableDownloadInterceptor ?? false}
+            onChange={() =>
+              mediaSettingsStorage.set(prev => ({
+                ...prev,
+                enableDownloadInterceptor: !prev.enableDownloadInterceptor,
+              }))
+            }
+            isLight={isLight}
+          />
+        </div>
+
+        <div className={divider} />
+
         {/* Concurrent downloads */}
         <div className="flex items-center justify-between px-5 py-4">
           <div className="flex items-center gap-3">
