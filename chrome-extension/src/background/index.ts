@@ -249,6 +249,20 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 });
 
 // ─── Context menu ───
+// Host suffixes where context-menu actions must no-op. chrome.contextMenus
+// pattern lists are positive-only so we can't exclude via the API; the
+// click handler below short-circuits when the page or target URL matches.
+const isRestrictedMenuUrl = (url: string | undefined): boolean => {
+  if (!url) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host === 'youtube.com' || host === 'youtu.be') return true;
+    return host.endsWith('.youtube.com') || host.endsWith('.youtube-nocookie.com') || host.endsWith('.googlevideo.com');
+  } catch {
+    return false;
+  }
+};
+
 const createContextMenus = () => {
   // Idempotent — re-creating on service-worker restart throws "duplicate id".
   try {
@@ -287,6 +301,18 @@ chrome.commands.onCommand.addListener(async command => {
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
+  // No-op the context menu when the page itself or the targeted URL is on
+  // a restricted host. Manifest exclude_matches prevents content scripts
+  // from injecting there in the first place, but the context menu lives
+  // in the browser chrome and surfaces independently of our injection.
+  if (
+    isRestrictedMenuUrl(tab?.url) ||
+    isRestrictedMenuUrl(info.pageUrl) ||
+    isRestrictedMenuUrl(info.srcUrl) ||
+    isRestrictedMenuUrl(info.linkUrl)
+  ) {
+    return;
+  }
   if (info.menuItemId === 'download-media') {
     const srcUrl = info.srcUrl;
     if (!srcUrl) return;

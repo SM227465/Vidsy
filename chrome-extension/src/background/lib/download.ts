@@ -353,8 +353,31 @@ const runDownloadJob = async (payload: DownloadPayload) => {
 // invokes this for each pending job when concurrency allows — see download-queue.ts.
 setQueueRunner(runDownloadJob);
 
+// Hard reject downloads pointed at hosts whose content policies forbid third-
+// party downloaders from operating. This is defense-in-depth on top of the
+// content-script exclude_matches in the manifest and the host blocklists in
+// detection.ts / paste-url.ts — every entry point that reaches the download
+// pipeline must end here, so we refuse a download regardless of which UI path
+// triggered it.
+const RESTRICTED_HOST_SUFFIXES = ['.youtube.com', '.youtube-nocookie.com', '.googlevideo.com', '.ytimg.com'];
+
+const isRestrictedDownloadUrl = (url: string): boolean => {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host === 'youtube.com' || host === 'youtu.be') return true;
+    return RESTRICTED_HOST_SUFFIXES.some(suffix => host.endsWith(suffix));
+  } catch {
+    return false;
+  }
+};
+
 export const handleDownload = async (payload: DownloadPayload) => {
   dlLog('handleDownload: enqueue request', payload);
+
+  if (isRestrictedDownloadUrl(payload.url)) {
+    dlLog('handleDownload: refusing — restricted host', payload.url);
+    return { ok: false, error: 'This platform is not supported.' } as const;
+  }
 
   // Subtitle fast-path: small text blobs, no offscreen, no progress state, no headers.
   // Route straight to chrome.downloads with a language-suffixed filename. These don't
