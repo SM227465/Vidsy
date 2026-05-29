@@ -3,7 +3,7 @@ import { PasteUrlRow } from './components/PasteUrlRow';
 import { SettingCard, SettingRow } from './components/SettingCard';
 import { SkeletonFallback, ErrorFallback } from './components/SkeletonFallback';
 import { useMediaPage } from './hooks/useMediaPage';
-import { IdmDownloadView } from './views/IdmDownloadView';
+import { DownloadDetailsView } from './views/DownloadDetailsView';
 import { MEDIA_MESSAGE, withErrorBoundary, withSuspense, mediaBadgeLabel, formatDate } from '@extension/shared';
 import { exampleThemeStorage, mediaSettingsStorage } from '@extension/storage';
 import {
@@ -171,15 +171,15 @@ const Popup = () => {
     </>
   );
 
-  /* ── IDM-style standalone download window ────────
-     Only activated when popup HTML is opened with #idm-download in URL
+  /* ── Standalone download details window ────────
+     Only activated when popup HTML is opened with #download-details in URL
      (via chrome.windows.create from the download interceptor). The normal
      browser-action popup never reaches this branch — its hash is empty so
      view stays 'main'. */
-  if (view === 'idm-download') {
+  if (view === 'download-details') {
     return (
       <div className={cn('h-screen w-screen font-sans', bg, text)}>
-        <IdmDownloadView downloads={downloads} isLight={isLight} />
+        <DownloadDetailsView downloads={downloads} isLight={isLight} />
       </div>
     );
   }

@@ -1,4 +1,5 @@
-// IDM-style download interceptor.
+// Download interceptor — catches browser-initiated downloads and offers to
+// route them through Vidsy via a modal in the originating tab.
 //
 // When the setting `enableDownloadInterceptor` is on, listens for browser-
 // initiated video/audio downloads via chrome.downloads.onCreated, cancels +
@@ -275,8 +276,8 @@ const resumeBrowserDownload = (url: string, fileName?: string): void => {
   void chrome.downloads.download(fileName ? { url, filename: fileName } : { url });
 };
 
-// Standalone IDM-style progress window — opens the popup HTML in a chrome
-// popup window (no tabs, no address bar) deep-linked to the downloads view.
+// Standalone progress window — opens the popup HTML in a chrome popup
+// window (no tabs, no address bar) deep-linked to the download details view.
 // The window survives main-browser minimize so the user can keep watching
 // progress while doing other things.
 let downloadsWindowId: number | null = null;
@@ -291,7 +292,7 @@ const openDownloadsWindow = async (): Promise<void> => {
     }
   }
   const win = await chrome.windows.create({
-    url: chrome.runtime.getURL('popup/index.html#idm-download'),
+    url: chrome.runtime.getURL('popup/index.html#download-details'),
     type: 'popup',
     width: 480,
     height: 520,

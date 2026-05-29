@@ -89,7 +89,7 @@ const App = () => {
   const ref = useRef<HTMLDivElement>(null);
   const prevVideoRef = useRef<VideoEntry | undefined>(undefined);
 
-  /* IDM-style intercept: background cancels a media download and asks us to
+  /* Download intercept: background cancels a media download and asks us to
      show a modal so the user can route it through Vidsy or open in browser. */
   useEffect(() => {
     const handler = (message: { type?: string; payload?: unknown }) => {

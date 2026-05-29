@@ -1,12 +1,12 @@
-// IDM-style single-download details view.
+// Standalone single-download details view.
 //
-// Rendered inside the popup HTML when opened with #idm-download (which is
+// Rendered inside the popup HTML when opened with #download-details (which is
 // what the download interceptor uses for its standalone progress window).
 // Auto-focuses on the most recent active download.
 //
-// NOT yet shown: per-connection breakdown ("Start positions and download
-// progress by connections" in IDM). That needs the offscreen worker to
-// report per-chunk progress — currently we only get aggregate bytes.
+// NOT yet shown: per-connection breakdown rendering the byte-range layout of
+// each parallel connection. That needs the offscreen worker to report per-
+// chunk progress — currently we only get aggregate bytes.
 
 import { MEDIA_MESSAGE, formatSpeed } from '@extension/shared';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -71,7 +71,7 @@ const pickFocusedDownload = (downloads: Record<string, MediaDownloadProgress>): 
   return entries.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0] ?? null;
 };
 
-export const IdmDownloadView = ({ downloads, isLight }: Props) => {
+export const DownloadDetailsView = ({ downloads, isLight }: Props) => {
   const entry = useMemo(() => pickFocusedDownload(downloads), [downloads]);
 
   // Smoothed speed and start-time tracking.
@@ -369,7 +369,7 @@ export const IdmDownloadView = ({ downloads, isLight }: Props) => {
           )}
         </div>
 
-        {/* Action buttons — horizontal row, right-aligned IDM-style */}
+        {/* Action buttons — horizontal row, right-aligned */}
         {isActive ? (
           <div className="flex justify-end gap-2">
             <button

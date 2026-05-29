@@ -3,9 +3,9 @@ import Popup from '@src/Popup';
 import { createRoot } from 'react-dom/client';
 
 // When loaded as a standalone window via chrome.windows.create (the download
-// interceptor uses #idm-download), override the popup's hardcoded 380×600
-// dimensions so the IDM-style view fills the larger window.
-if (typeof window !== 'undefined' && window.location.hash === '#idm-download') {
+// interceptor uses #download-details), override the popup's hardcoded 380×600
+// dimensions so the details view fills the larger window.
+if (typeof window !== 'undefined' && window.location.hash === '#download-details') {
   const fill = (el: HTMLElement | null) => {
     if (!el) return;
     el.style.width = '100%';

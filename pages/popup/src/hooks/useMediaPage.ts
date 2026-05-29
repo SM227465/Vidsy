@@ -28,12 +28,18 @@ export const useMediaPage = () => {
   const [selectedVariants, setSelectedVariants] = useState<Record<string, string>>({});
   // Allow callers to deep-link to a specific view via URL hash, e.g. when the
   // popup HTML is opened as a standalone window via chrome.windows.create
-  // (used by the download interceptor to show an IDM-style progress window).
-  type View = 'main' | 'settings' | 'history' | 'downloads' | 'idm-download';
+  // (used by the download interceptor to show the standalone progress window).
+  type View = 'main' | 'settings' | 'history' | 'downloads' | 'download-details';
   const initialView = ((): View => {
     if (typeof window === 'undefined') return 'main';
     const hash = window.location.hash.replace('#', '');
-    if (hash === 'downloads' || hash === 'settings' || hash === 'history' || hash === 'main' || hash === 'idm-download')
+    if (
+      hash === 'downloads' ||
+      hash === 'settings' ||
+      hash === 'history' ||
+      hash === 'main' ||
+      hash === 'download-details'
+    )
       return hash;
     return 'main';
   })();

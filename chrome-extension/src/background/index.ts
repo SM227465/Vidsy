@@ -24,7 +24,7 @@ setInterval(() => {
 setupHeaderCapture();
 cleanupStaleDnrRules();
 
-// ─── IDM-style download interceptor (opt-in via settings) ───
+// ─── Browser download interceptor (opt-in via settings) ───
 setupDownloadInterceptor();
 
 // ─── Network detection listener ───
@@ -89,9 +89,9 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
     if (msg.type === MEDIA_MESSAGE.INTERCEPT_DOWNLOAD_VIDSY) {
       const tabId = sender.tab?.id;
       const kind = deriveKind(msg.payload.url);
-      // Open the standalone IDM-style progress window BEFORE kicking off the
-      // download so the user immediately sees the queue, even if handleDownload
-      // takes a moment to resolve.
+      // Open the standalone progress window BEFORE kicking off the download
+      // so the user immediately sees the queue, even if handleDownload takes
+      // a moment to resolve.
       void openDownloadsWindow();
       const result = await handleDownload({
         url: msg.payload.url,
