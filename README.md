@@ -37,12 +37,12 @@ For early access to fixes or for development testing:
 - **Smart metadata extraction** from JSON-LD, OpenGraph, and meta tags (title, thumbnail, duration)
 - **CDN header injection** via `declarativeNetRequest` for sites requiring Referer/Origin headers
 - **All downloads managed internally** (HTTP, HLS, DASH, merged video+audio) with real-time progress tracking
-- **DRM-protected stream detection** — identifies Widevine / PlayReady / FairPlay upfront and refuses cleanly (no silent failures)
+- **DRM-protected stream detection** — identifies encrypted streams upfront and refuses cleanly (no silent failures)
 - **HTTP Range-parallel downloads** — multi-connection acceleration for plain MP4 sources
-- **Merged video + audio downloads** — single libav invocation combines split A/V streams (YouTube, DASH)
+- **Merged video + audio downloads** — single libav invocation combines split A/V streams (DASH adaptive)
 - **Main-video filtering** to skip hover previews and tiny player widgets
 - **Disk space preflight** — checks `navigator.storage.estimate()` before large jobs to avoid mid-mux disk failures
-- **Site-specific detectors** for YouTube and Vimeo with deep metadata extraction
+- **Site-specific metadata extraction** for selected platforms
 - **Cancel / stop** any in-progress download with OPFS cleanup
 - **Dashboard options page** with settings, download history, and about panel
 - **Popup + Side Panel** — quick-access UIs with download progress bars and media cards
@@ -60,7 +60,7 @@ For early access to fixes or for development testing:
 | Merged V+A | Separate video & audio tracks | MP4 | Single libav pass with two `jsfetch:` inputs |
 | Subtitles | WebVTT / SRT / TTML | SRT | Converted on save |
 
-DRM-protected streams (Widevine, PlayReady, FairPlay) are detected pre-dispatch and rejected with a user-visible message — Vidsy does not attempt decryption.
+DRM-protected streams are detected pre-dispatch and rejected with a user-visible message — Vidsy does not attempt decryption of protected content.
 
 ## Architecture
 
@@ -135,7 +135,7 @@ pages/
   popup/               Toolbar popup
   side-panel/          Full side-panel UI
   options/             Settings + download history dashboard
-  content/             Site-specific detectors (YouTube, Vimeo, generic)
+  content/             Site-specific detectors + generic media scanner
   content-ui/          In-page overlay (download buttons on hover)
   devtools/            Devtools page
 packages/
@@ -162,7 +162,6 @@ packages/
 | `offscreen` | libav.js (FFmpeg WASM) OPFS-streaming mux |
 | `contextMenus` | Right-click "Download media" on video/audio elements |
 | `sidePanel` | Side panel UI |
-| `notifications` | Surface download completion / failure |
 | `unlimitedStorage` | OPFS quota for multi-GB video muxing |
 | `host_permissions: <all_urls>` | Detect media on any website |
 
