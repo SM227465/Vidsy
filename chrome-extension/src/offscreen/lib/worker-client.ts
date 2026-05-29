@@ -56,8 +56,8 @@ const ensureListener = (() => {
       const msg = ev.data;
       switch (msg.type) {
         case 'progress': {
-          const { jobKey, stage, downloadedBytes, estimatedBytes, muxPercent } = msg as ProgressUpdate;
-          void updateProgress(jobKey, { stage, downloadedBytes, estimatedBytes, muxPercent });
+          const { jobKey, stage, downloadedBytes, estimatedBytes, muxPercent, chunks } = msg as ProgressUpdate;
+          void updateProgress(jobKey, { stage, downloadedBytes, estimatedBytes, muxPercent, chunks });
           return;
         }
         case 'fetch-done': {

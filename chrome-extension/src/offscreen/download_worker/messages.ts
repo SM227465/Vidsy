@@ -2,6 +2,7 @@
 // The worker owns OPFS; the main thread still runs ffmpeg.wasm (mounts OPFS Files via WORKERFS).
 
 import type { HlsKeyInfo } from '../lib/m3u8-parser';
+import type { ChunkProgress } from '@extension/shared';
 
 export type JobKey = string;
 
@@ -97,6 +98,7 @@ export type ProgressUpdate = {
   downloadedBytes: number;
   estimatedBytes?: number;
   muxPercent?: number;
+  chunks?: ChunkProgress[];
 };
 
 export type FetchDone = {

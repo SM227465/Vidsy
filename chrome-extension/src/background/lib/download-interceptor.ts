@@ -276,33 +276,44 @@ const resumeBrowserDownload = (url: string, fileName?: string): void => {
   void chrome.downloads.download(fileName ? { url, filename: fileName } : { url });
 };
 
-// Standalone progress window — opens the popup HTML in a chrome popup
-// window (no tabs, no address bar) deep-linked to the download details view.
-// The window survives main-browser minimize so the user can keep watching
+// Standalone progress window — one window per download (keyed by the
+// download URL/key). Opens the popup HTML deep-linked to the download
+// details view with the key on the query string so each window pins to a
+// single download instead of showing whichever job is most recent. The
+// window survives main-browser minimize so the user can keep watching
 // progress while doing other things.
-let downloadsWindowId: number | null = null;
+const downloadWindowIds = new Map<string, number>();
 
-const openDownloadsWindow = async (): Promise<void> => {
-  if (downloadsWindowId !== null) {
+const openDownloadsWindow = async (key: string): Promise<void> => {
+  // If a window for this exact download is already open, focus it instead
+  // of spawning a duplicate.
+  const existingId = downloadWindowIds.get(key);
+  if (existingId !== undefined) {
     try {
-      await chrome.windows.update(downloadsWindowId, { focused: true });
+      await chrome.windows.update(existingId, { focused: true });
       return;
     } catch {
-      downloadsWindowId = null;
+      downloadWindowIds.delete(key);
     }
   }
+  const url = `popup/index.html?dlKey=${encodeURIComponent(key)}#download-details`;
   const win = await chrome.windows.create({
-    url: chrome.runtime.getURL('popup/index.html#download-details'),
+    url: chrome.runtime.getURL(url),
     type: 'popup',
     width: 480,
-    height: 520,
+    height: 600,
     focused: true,
   });
-  downloadsWindowId = win?.id ?? null;
+  if (win?.id !== undefined) downloadWindowIds.set(key, win.id);
 };
 
-chrome.windows.onRemoved.addListener(id => {
-  if (id === downloadsWindowId) downloadsWindowId = null;
+chrome.windows.onRemoved.addListener(closedId => {
+  for (const [key, winId] of downloadWindowIds) {
+    if (winId === closedId) {
+      downloadWindowIds.delete(key);
+      break;
+    }
+  }
 });
 
 export { setupDownloadInterceptor, resumeBrowserDownload, openDownloadsWindow };

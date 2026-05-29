@@ -15,6 +15,7 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from './messages';
+import type { ChunkProgress } from '@extension/shared';
 
 const MAX_CONCURRENT = 8;
 const MAX_RETRIES = 3;
@@ -51,6 +52,10 @@ const fetchWithRetry = async (
 // Fetch `count` items in parallel (bounded by MAX_CONCURRENT), append their
 // buffers to OPFS in strict index order, and report progress along the way.
 // Used by both segment and range download paths.
+//
+// When `chunkMeta` is supplied (HTTP-range case), per-chunk progress is
+// included on each `progress` message so the standalone download window can
+// render a multi-band position bar plus a connections table.
 const parallelFetchToOpfs = async (args: {
   opfsName: string;
   count: number;
@@ -59,8 +64,9 @@ const parallelFetchToOpfs = async (args: {
   jobKey: string;
   signal: AbortSignal;
   totalEstimatedBytes?: number;
+  chunkMeta?: Array<{ start: number; end: number }>;
 }): Promise<void> => {
-  const { opfsName, count, fetchOne, stage, jobKey, signal, totalEstimatedBytes } = args;
+  const { opfsName, count, fetchOne, stage, jobKey, signal, totalEstimatedBytes, chunkMeta } = args;
 
   const pending = new Map<number, Uint8Array>();
   let nextToWrite = 0;
@@ -69,6 +75,13 @@ const parallelFetchToOpfs = async (args: {
   let cursor = 0;
   let finishedDispatching = false;
   const errors: Error[] = [];
+
+  const chunkStates: ChunkProgress[] | undefined = chunkMeta?.map((m, i) => ({
+    i,
+    start: m.start,
+    end: m.end,
+    status: 'pending' as const,
+  }));
 
   const flushInOrder = (): void => {
     while (pending.has(nextToWrite)) {
@@ -80,16 +93,26 @@ const parallelFetchToOpfs = async (args: {
   };
 
   const dispatchOne = async (index: number): Promise<void> => {
+    if (chunkStates && chunkStates[index]) chunkStates[index].status = 'fetching';
     try {
       const data = await fetchOne(index, signal);
       pending.set(index, new Uint8Array(data));
       completedCount++;
+      if (chunkStates && chunkStates[index]) chunkStates[index].status = 'done';
       flushInOrder();
       const written = opfs.size(opfsName);
       const estimatedBytes =
         totalEstimatedBytes ?? (completedCount > 0 ? Math.round((written / completedCount) * count) : undefined);
-      post({ type: 'progress', jobKey, stage, downloadedBytes: written, estimatedBytes });
+      post({
+        type: 'progress',
+        jobKey,
+        stage,
+        downloadedBytes: written,
+        estimatedBytes,
+        chunks: chunkStates ? chunkStates.map(c => ({ ...c })) : undefined,
+      });
     } catch (err) {
+      if (chunkStates && chunkStates[index]) chunkStates[index].status = 'error';
       errors.push(err instanceof Error ? err : new Error(String(err)));
     }
   };
@@ -189,6 +212,7 @@ const handleFetchRanges = async (req: FetchRangesRequest): Promise<void> => {
       jobKey,
       signal: controller.signal,
       totalEstimatedBytes: knownTotal,
+      chunkMeta: ranges,
     });
 
     await opfs.close(opfsName);
@@ -247,27 +271,45 @@ const handleMux = async (req: MuxRequest): Promise<void> => {
       muxPercent: undefined,
     });
 
+    // MP3 transcode has output_size << input_size, so any size-ratio estimate
+    // is misleading there — keep the indeterminate "Processing…" for MP3.
+    // Stream-copy mux (.mp4 etc.) produces output ≈ input, so OPFS file size
+    // is a reliable proxy.
+    const isMp3Transcode = outputOpfsName.endsWith('.mp3');
+
     pollHandle = setInterval(() => {
       (async () => {
         try {
           if (!libav) return;
-          // These two methods are an extension some libav.js builds carry but
-          // the vendored h264-aac-mp3 build doesn't expose. When missing we
-          // skip the per-tick muxPercent update — the mux still runs to
-          // completion, the UI just lacks fine-grained progress.
+          // libav.ffmpeg_get_out_time_ms / get_total_size_bytes are an
+          // extension some libav.js builds carry; the vendored h264-aac-mp3
+          // build doesn't expose them. We try those first, then fall back to
+          // the OPFS output file size (which the custom output device writes
+          // to as the mux runs) for stream-copy.
           const getOutTime = libav.ffmpeg_get_out_time_ms as (() => Promise<number>) | undefined;
           const getTotalBytes = libav.ffmpeg_get_total_size_bytes as (() => Promise<number>) | undefined;
-          if (typeof getOutTime !== 'function' || typeof getTotalBytes !== 'function') return;
-          const outTimeMs = await getOutTime.call(libav);
-          const totalBytes = await getTotalBytes.call(libav);
+          const hasLibavProgress = typeof getOutTime === 'function' && typeof getTotalBytes === 'function';
+
+          let outTimeMs = 0;
+          let totalBytes = 0;
+          if (hasLibavProgress) {
+            outTimeMs = await getOutTime!.call(libav);
+            totalBytes = await getTotalBytes!.call(libav);
+          } else {
+            totalBytes = opfs.size(outputOpfsName);
+          }
+
           let muxPercent: number | undefined;
           if (durationSeconds && durationSeconds > 0 && outTimeMs > 0) {
             muxPercent = Math.min(99, Math.round((outTimeMs / 1000 / durationSeconds) * 100));
-          } else if (estimatedBytes && estimatedBytes > 0 && totalBytes > 0) {
-            // Stream-copy MP4: output size ≈ input size. For MP3 transcode the
-            // ratio is off but still monotonic — better than showing nothing.
+          } else if (!isMp3Transcode && estimatedBytes && estimatedBytes > 0 && totalBytes > 0) {
             muxPercent = Math.min(99, Math.round((totalBytes / estimatedBytes) * 100));
           }
+
+          // Skip the post if we have nothing useful to report (avoid spamming
+          // the storage with 0/undefined updates that overwrite a prior value).
+          if (muxPercent === undefined && totalBytes === 0) return;
+
           post({
             type: 'progress',
             jobKey,

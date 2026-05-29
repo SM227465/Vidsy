@@ -10,7 +10,7 @@
 
 import { MEDIA_MESSAGE, formatSpeed } from '@extension/shared';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { MediaDownloadProgress } from '@extension/shared';
+import type { ChunkProgress, MediaDownloadProgress } from '@extension/shared';
 
 const ACTIVE_STAGES = new Set([
   'queued',
@@ -71,14 +71,26 @@ const pickFocusedDownload = (downloads: Record<string, MediaDownloadProgress>): 
   return entries.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0] ?? null;
 };
 
+// dlKey on the query string pins this window to a single download — the
+// interceptor spawns one window per intercepted file. Absent: fall back to
+// picking the most-recent active download (covers the no-key entry path).
+const readDlKey = (): string | null => {
+  if (typeof window === 'undefined') return null;
+  return new URLSearchParams(window.location.search).get('dlKey');
+};
+
 export const DownloadDetailsView = ({ downloads, isLight }: Props) => {
-  const entry = useMemo(() => pickFocusedDownload(downloads), [downloads]);
+  const dlKey = useMemo(() => readDlKey(), []);
+  const entry = useMemo(() => {
+    if (dlKey) return downloads[dlKey] ?? null;
+    return pickFocusedDownload(downloads);
+  }, [downloads, dlKey]);
 
   // Smoothed speed and start-time tracking.
   const prevRef = useRef<{ bytes: number; time: number } | null>(null);
   const [speed, setSpeed] = useState(0);
   const lastKeyRef = useRef<string | null>(null);
-  const [connectionsOpen, setConnectionsOpen] = useState(false);
+  const [connectionsOpen, setConnectionsOpen] = useState(true);
 
   // Stall detection: track when downloadedBytes last increased. The 1-Hz tick
   // forces re-render so we can flip the status label to "Connecting…" when
@@ -138,7 +150,7 @@ export const DownloadDetailsView = ({ downloads, isLight }: Props) => {
   if (!entry) {
     return (
       <div className={`flex h-full w-full flex-col items-center justify-center font-sans ${bg} ${text}`}>
-        <p className={`text-sm ${muted}`}>No active downloads</p>
+        <p className={`text-sm ${muted}`}>{dlKey ? 'Starting download…' : 'No active downloads'}</p>
       </div>
     );
   }
@@ -364,7 +376,77 @@ export const DownloadDetailsView = ({ downloads, isLight }: Props) => {
           </button>
           {connectionsOpen && (
             <div className={`border-t px-4 py-3 ${isLight ? 'border-gray-200' : 'border-white/[0.06]'}`}>
-              <p className={`text-center text-[10px] italic ${muted}`}>Per-connection breakdown coming soon</p>
+              {entry.chunks && entry.chunks.length > 0 ? (
+                (() => {
+                  const chunks = entry.chunks;
+                  const fileEnd = chunks.reduce((m, c) => Math.max(m, c.end + 1), 0);
+                  const totalForBar = Math.max(entry.estimatedBytes ?? 0, fileEnd, 1);
+                  const colorFor = (status: ChunkProgress['status']) =>
+                    status === 'done'
+                      ? 'bg-emerald-500'
+                      : status === 'fetching'
+                        ? 'bg-blue-500'
+                        : status === 'error'
+                          ? 'bg-red-500'
+                          : isLight
+                            ? 'bg-gray-400'
+                            : 'bg-white/[0.18]';
+                  const statusTextColor = (status: ChunkProgress['status']) => {
+                    if (status === 'done') return isLight ? 'text-emerald-700' : 'text-emerald-400';
+                    if (status === 'fetching') return isLight ? 'text-blue-700' : 'text-blue-400';
+                    if (status === 'error') return isLight ? 'text-red-700' : 'text-red-400';
+                    return muted;
+                  };
+                  return (
+                    <>
+                      {/* Position bar */}
+                      <div
+                        className={`relative h-4 w-full overflow-hidden rounded ${isLight ? 'bg-gray-200' : 'bg-white/[0.06]'}`}>
+                        {chunks.map(c => {
+                          const leftPct = (c.start / totalForBar) * 100;
+                          const widthPct = ((c.end - c.start + 1) / totalForBar) * 100;
+                          return (
+                            <div
+                              key={c.i}
+                              className={`absolute bottom-0 top-0 ${colorFor(c.status)} ${c.status === 'fetching' ? 'animate-pulse' : ''}`}
+                              style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                              title={`Connection ${c.i + 1}: ${c.status}`}
+                            />
+                          );
+                        })}
+                      </div>
+
+                      {/* Chunk table */}
+                      <table className="mt-3 w-full text-[10px]">
+                        <thead>
+                          <tr className={labelCol}>
+                            <th className="pb-1.5 text-left font-medium">N°</th>
+                            <th className="pb-1.5 text-right font-medium">Range</th>
+                            <th className="pb-1.5 text-right font-medium">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {chunks.map(c => (
+                            <tr key={c.i}>
+                              <td className={`py-0.5 ${valueCol}`}>{c.i + 1}</td>
+                              <td className={`py-0.5 text-right font-mono ${valueCol}`}>
+                                {formatBytes(c.start)} – {formatBytes(c.end + 1)}
+                              </td>
+                              <td className={`py-0.5 text-right capitalize ${statusTextColor(c.status)}`}>
+                                {c.status}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </>
+                  );
+                })()
+              ) : (
+                <p className={`text-center text-[10px] italic ${muted}`}>
+                  Per-connection breakdown is only available for direct HTTP downloads with Range support
+                </p>
+              )}
             </div>
           )}
         </div>

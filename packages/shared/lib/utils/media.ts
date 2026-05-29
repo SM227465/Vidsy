@@ -73,6 +73,18 @@ export type MediaDownloadStage =
   | 'cancelled'
   | 'paused';
 
+// Per-connection chunk progress for HTTP Range parallel downloads. Reported by
+// the worker so the details window can render a multi-band position bar and
+// table similar to the connections breakdown in dedicated download managers.
+// Only populated for HTTP-range downloads; HLS/DASH segment fetches leave it
+// unset since the visualization doesn't translate to many small segments.
+export type ChunkProgress = {
+  i: number; // 0-based chunk index
+  start: number; // inclusive byte offset in the destination file
+  end: number; // inclusive byte offset in the destination file
+  status: 'pending' | 'fetching' | 'done' | 'error';
+};
+
 export type MediaDownloadProgress = {
   key: string; // typically url
   stage: MediaDownloadStage;
@@ -86,6 +98,7 @@ export type MediaDownloadProgress = {
   startedAt?: number;
   updatedAt?: number;
   queuePosition?: number; // 1-based, shown when stage === 'queued'
+  chunks?: ChunkProgress[]; // per-connection breakdown (HTTP range only)
 };
 
 export type MediaDownloadState = Record<string, MediaDownloadProgress>;

@@ -89,10 +89,10 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
     if (msg.type === MEDIA_MESSAGE.INTERCEPT_DOWNLOAD_VIDSY) {
       const tabId = sender.tab?.id;
       const kind = deriveKind(msg.payload.url);
-      // Open the standalone progress window BEFORE kicking off the download
-      // so the user immediately sees the queue, even if handleDownload takes
-      // a moment to resolve.
-      void openDownloadsWindow();
+      // Open the per-download progress window BEFORE kicking off the
+      // download — keyed on the URL so each download gets its own window
+      // (handleDownload uses url as the storage key by default).
+      void openDownloadsWindow(msg.payload.url);
       const result = await handleDownload({
         url: msg.payload.url,
         fileName: msg.payload.fileName ?? deriveFileName(msg.payload.url),
