@@ -3,6 +3,19 @@ import type { ManifestType } from '@extension/shared';
 
 const packageJson = JSON.parse(readFileSync('./package.json', 'utf8'));
 
+// Host patterns the extension must not touch — these platforms have content
+// policies that prohibit third-party media downloaders from operating on
+// their pages. Excluding here means our content scripts and overlays do not
+// inject at all; the background-side blocklists in detection.ts and
+// paste-url.ts provide a second layer of defense for cross-origin media
+// requests that originate from other pages.
+const RESTRICTED_HOST_PATTERNS = [
+  '*://*.youtube.com/*',
+  '*://youtube.com/*',
+  '*://*.youtube-nocookie.com/*',
+  '*://*.googlevideo.com/*',
+];
+
 /**
  * @prop default_locale
  * if you want to support multiple languages, you can use the following reference
@@ -71,6 +84,7 @@ const manifest = {
   content_scripts: [
     {
       matches: ['http://*/*', 'https://*/*', '<all_urls>'],
+      exclude_matches: RESTRICTED_HOST_PATTERNS,
       js: ['content/all.iife.js'],
       all_frames: true,
     },
@@ -91,6 +105,7 @@ const manifest = {
     },
     {
       matches: ['http://*/*', 'https://*/*', '<all_urls>'],
+      exclude_matches: RESTRICTED_HOST_PATTERNS,
       js: ['content-ui/all.iife.js'],
       all_frames: true,
     },
@@ -100,6 +115,7 @@ const manifest = {
     },
     {
       matches: ['http://*/*', 'https://*/*', '<all_urls>'],
+      exclude_matches: RESTRICTED_HOST_PATTERNS,
       css: ['content.css'],
       all_frames: true,
     },
