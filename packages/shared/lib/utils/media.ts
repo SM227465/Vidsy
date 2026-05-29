@@ -61,6 +61,7 @@ export type MediaItem = {
 };
 
 export type MediaDownloadStage =
+  | 'queued'
   | 'init'
   | 'fetch-manifest'
   | 'download-video'
@@ -84,6 +85,7 @@ export type MediaDownloadProgress = {
   outputFormat?: 'mp4' | 'mp3'; // remembered so Retry reuses the original choice
   startedAt?: number;
   updatedAt?: number;
+  queuePosition?: number; // 1-based, shown when stage === 'queued'
 };
 
 export type MediaDownloadState = Record<string, MediaDownloadProgress>;
@@ -120,6 +122,10 @@ export const MEDIA_MESSAGE = {
   CLEAR_DOWNLOADS: 'media/clear-downloads',
   MAIN_VIDEO_PRESENT: 'media/main-video-present',
   PASTE_URL: 'media/paste-url',
+  PICKER_START: 'picker/start',
+  PICKER_ACTIVATE: 'picker/activate',
+  PICKER_PICKED: 'picker/picked',
+  QUEUE_REORDER: 'media/queue-reorder',
 } as const;
 
 export type MediaMessage =
@@ -149,6 +155,10 @@ export type MediaMessage =
   | { type: typeof MEDIA_MESSAGE.CANCEL; payload: { url: string; intent?: 'pause' | 'cancel' } }
   | { type: typeof MEDIA_MESSAGE.CLEAR_DOWNLOADS; payload?: { keys?: string[] } }
   | { type: typeof MEDIA_MESSAGE.MAIN_VIDEO_PRESENT; payload: { present: boolean } }
-  | { type: typeof MEDIA_MESSAGE.PASTE_URL; payload: { url: string; tabId?: number } };
+  | { type: typeof MEDIA_MESSAGE.PASTE_URL; payload: { url: string; tabId?: number } }
+  | { type: typeof MEDIA_MESSAGE.PICKER_START; payload?: { tabId?: number } }
+  | { type: typeof MEDIA_MESSAGE.PICKER_ACTIVATE }
+  | { type: typeof MEDIA_MESSAGE.PICKER_PICKED; payload: { url: string } }
+  | { type: typeof MEDIA_MESSAGE.QUEUE_REORDER; payload: { key: string; direction: 'up' | 'down' } };
 
 export type PasteUrlResult = { ok: true; kind: MediaKind } | { ok: false; error: string };

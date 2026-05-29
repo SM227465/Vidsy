@@ -3,7 +3,7 @@ import { PasteUrlRow } from './components/PasteUrlRow';
 import { SettingCard, SettingRow } from './components/SettingCard';
 import { SkeletonFallback, ErrorFallback } from './components/SkeletonFallback';
 import { useMediaPage } from './hooks/useMediaPage';
-import { withErrorBoundary, withSuspense, mediaBadgeLabel, formatDate } from '@extension/shared';
+import { MEDIA_MESSAGE, withErrorBoundary, withSuspense, mediaBadgeLabel, formatDate } from '@extension/shared';
 import { exampleThemeStorage, mediaSettingsStorage } from '@extension/storage';
 import {
   cn,
@@ -16,6 +16,7 @@ import {
   IconHistory,
   IconLink,
   IconMoon,
+  IconPicker,
   IconSidePanel,
   IconSun,
   IconTrash,
@@ -55,6 +56,7 @@ const Popup = () => {
     onPause,
     onRetry,
     onClearDownloads,
+    onReorder,
     clearTabDetections,
     copyUrl,
     startEdit,
@@ -67,13 +69,45 @@ const Popup = () => {
   } = useMediaPage();
   const [pasteOpen, setPasteOpen] = useState(false);
 
-  const downloadList = Object.values(downloads).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-  const ACTIVE_STAGES = new Set(['init', 'fetch-manifest', 'download-video', 'download-audio', 'mux', 'finalize']);
+  const ACTIVE_STAGES = new Set([
+    'queued',
+    'init',
+    'fetch-manifest',
+    'download-video',
+    'download-audio',
+    'mux',
+    'finalize',
+  ]);
+  // Sort: queued (by position) → running → terminal (newest first)
+  const downloadList = Object.values(downloads).sort((a, b) => {
+    if (a.stage === 'queued' && b.stage === 'queued') return (a.queuePosition ?? 0) - (b.queuePosition ?? 0);
+    if (a.stage === 'queued') return 1;
+    if (b.stage === 'queued') return -1;
+    return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+  });
   const activeDownloadCount = downloadList.filter(d => ACTIVE_STAGES.has(d.stage)).length;
   const hasTerminalEntries = downloadList.some(d => !ACTIVE_STAGES.has(d.stage));
 
+  const startPicker = () => {
+    chrome.runtime
+      .sendMessage({ type: MEDIA_MESSAGE.PICKER_START, payload: { tabId: tabId ?? undefined } })
+      .catch(() => undefined);
+    window.close();
+  };
+
   const popupActions = (
     <>
+      <button
+        className={cn(
+          'rounded-lg p-2 transition',
+          isLight
+            ? 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+            : 'text-gray-500 hover:bg-white/[0.06] hover:text-gray-300',
+        )}
+        title="Pick a video on the page (Alt+Shift+V)"
+        onClick={startPicker}>
+        <IconPicker />
+      </button>
       <button
         className={cn(
           'rounded-lg p-2 transition',
@@ -206,17 +240,22 @@ const Popup = () => {
             />
           ) : (
             <div className="space-y-px">
-              {downloadList.map(entry => (
-                <DownloadRow
-                  key={entry.key}
-                  entry={entry}
-                  isLight={isLight}
-                  onRetry={onRetry}
-                  onPause={onPause}
-                  onCancel={onCancel}
-                  onRemove={k => onClearDownloads([k])}
-                />
-              ))}
+              {(() => {
+                const queueTotal = downloadList.filter(e => e.stage === 'queued').length;
+                return downloadList.map(entry => (
+                  <DownloadRow
+                    key={entry.key}
+                    entry={entry}
+                    isLight={isLight}
+                    onRetry={onRetry}
+                    onPause={onPause}
+                    onCancel={onCancel}
+                    onRemove={k => onClearDownloads([k])}
+                    onReorder={onReorder}
+                    queueTotal={queueTotal}
+                  />
+                ));
+              })()}
             </div>
           )}
         </div>

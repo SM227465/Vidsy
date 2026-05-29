@@ -1,10 +1,28 @@
+import { DownloadProgress } from './DownloadProgress';
+import {
+  IconChevronDown,
+  IconChevronUp,
+  IconFolder,
+  IconPause,
+  IconPlay,
+  IconRefresh,
+  IconTrash,
+  IconVideo,
+  IconX,
+} from './icons';
 import { cn } from '../../utils';
 import { formatDuration } from '@extension/shared';
 import type { MediaDownloadProgress } from '@extension/shared';
-import { DownloadProgress } from './DownloadProgress';
-import { IconFolder, IconPause, IconPlay, IconRefresh, IconTrash, IconVideo, IconX } from './icons';
 
-const ACTIVE_STAGES = new Set(['init', 'fetch-manifest', 'download-video', 'download-audio', 'mux', 'finalize']);
+const ACTIVE_STAGES = new Set([
+  'queued',
+  'init',
+  'fetch-manifest',
+  'download-video',
+  'download-audio',
+  'mux',
+  'finalize',
+]);
 
 export const DownloadRow = ({
   entry,
@@ -13,6 +31,8 @@ export const DownloadRow = ({
   onPause,
   onCancel,
   onRemove,
+  onReorder,
+  queueTotal,
 }: {
   entry: MediaDownloadProgress;
   isLight: boolean;
@@ -20,22 +40,32 @@ export const DownloadRow = ({
   onPause: (key: string) => void;
   onCancel: (key: string) => void;
   onRemove: (key: string) => void;
+  onReorder?: (key: string, direction: 'up' | 'down') => void;
+  queueTotal?: number;
 }) => {
   const item = entry.item;
   const isActive = ACTIVE_STAGES.has(entry.stage);
+  const isQueued = entry.stage === 'queued';
   const isSuccess = entry.stage === 'success';
   const isFailed = entry.stage === 'failed';
   const isCancelled = entry.stage === 'cancelled';
   const isPaused = entry.stage === 'paused';
   const canRetry = (isFailed || isCancelled || isPaused) && !!item;
 
-  const displayName =
-    item?.title?.trim() ||
-    (item?.fileName ?? entry.key).replace(/\.[^.]+$/, '').replace(/_/g, ' ');
+  const displayName = item?.title?.trim() || (item?.fileName ?? entry.key).replace(/\.[^.]+$/, '').replace(/_/g, ' ');
   const durationStr = item?.duration ? formatDuration(item.duration) : '';
 
+  const queuePos = entry.queuePosition ?? 0;
+  const canMoveUp = isQueued && queuePos > 1;
+  const canMoveDown = isQueued && queueTotal !== undefined && queuePos < queueTotal;
+
   return (
-    <div className={cn('group relative px-4 py-3 transition', isLight ? 'hover:bg-gray-50' : 'hover:bg-white/[0.02]')}>
+    <div
+      className={cn(
+        'group relative px-4 py-3 transition',
+        isQueued && 'opacity-70',
+        isLight ? 'hover:bg-gray-50' : 'hover:bg-white/[0.02]',
+      )}>
       <div className="flex gap-3">
         <div
           className={cn(
@@ -85,17 +115,47 @@ export const DownloadRow = ({
               <div className="min-w-0 flex-1">
                 <DownloadProgress progress={entry} isLight={isLight} />
               </div>
-              <button
-                className={cn(
-                  'flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[10px] font-semibold transition',
-                  isLight
-                    ? 'bg-amber-100 text-amber-700 hover:bg-amber-200'
-                    : 'bg-amber-500/15 text-amber-400 hover:bg-amber-500/25',
-                )}
-                title="Pause (remembers intent to resume)"
-                onClick={() => onPause(entry.key)}>
-                <IconPause /> Pause
-              </button>
+              {isQueued && onReorder ? (
+                <>
+                  <button
+                    className={cn(
+                      'shrink-0 rounded-md p-1 transition disabled:cursor-not-allowed disabled:opacity-40',
+                      isLight
+                        ? 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        : 'bg-white/[0.06] text-gray-300 hover:bg-white/[0.1]',
+                    )}
+                    title="Move up in queue"
+                    disabled={!canMoveUp}
+                    onClick={() => onReorder(entry.key, 'up')}>
+                    <IconChevronUp />
+                  </button>
+                  <button
+                    className={cn(
+                      'shrink-0 rounded-md p-1 transition disabled:cursor-not-allowed disabled:opacity-40',
+                      isLight
+                        ? 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        : 'bg-white/[0.06] text-gray-300 hover:bg-white/[0.1]',
+                    )}
+                    title="Move down in queue"
+                    disabled={!canMoveDown}
+                    onClick={() => onReorder(entry.key, 'down')}>
+                    <IconChevronDown />
+                  </button>
+                </>
+              ) : null}
+              {isQueued ? null : (
+                <button
+                  className={cn(
+                    'flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[10px] font-semibold transition',
+                    isLight
+                      ? 'bg-amber-100 text-amber-700 hover:bg-amber-200'
+                      : 'bg-amber-500/15 text-amber-400 hover:bg-amber-500/25',
+                  )}
+                  title="Pause (remembers intent to resume)"
+                  onClick={() => onPause(entry.key)}>
+                  <IconPause /> Pause
+                </button>
+              )}
               <button
                 className={cn(
                   'shrink-0 rounded-md p-1 transition',
@@ -103,7 +163,7 @@ export const DownloadRow = ({
                     ? 'bg-red-100 text-red-600 hover:bg-red-200'
                     : 'bg-red-500/15 text-red-400 hover:bg-red-500/25',
                 )}
-                title="Cancel download"
+                title={isQueued ? 'Remove from queue' : 'Cancel download'}
                 onClick={() => onCancel(entry.key)}>
                 <IconX />
               </button>
@@ -119,9 +179,7 @@ export const DownloadRow = ({
                         ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
                         : 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25',
                     )}
-                    onClick={() =>
-                      chrome.runtime.sendMessage({ type: 'media/open', downloadId: entry.downloadId })
-                    }>
+                    onClick={() => chrome.runtime.sendMessage({ type: 'media/open', downloadId: entry.downloadId })}>
                     <IconPlay /> Play
                   </button>
                   <button
@@ -131,9 +189,7 @@ export const DownloadRow = ({
                         ? 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                         : 'bg-white/[0.06] text-gray-300 hover:bg-white/[0.1]',
                     )}
-                    onClick={() =>
-                      chrome.runtime.sendMessage({ type: 'media/show', downloadId: entry.downloadId })
-                    }>
+                    onClick={() => chrome.runtime.sendMessage({ type: 'media/show', downloadId: entry.downloadId })}>
                     <IconFolder /> Show in Folder
                   </button>
                 </>
@@ -157,13 +213,7 @@ export const DownloadRow = ({
                       : 'text-red-400',
                 )}>
                 {isPaused ? <IconPause /> : <IconX />}
-                {isPaused
-                  ? 'Paused'
-                  : isCancelled
-                    ? 'Cancelled'
-                    : entry.error
-                      ? entry.error.slice(0, 40)
-                      : 'Failed'}
+                {isPaused ? 'Paused' : isCancelled ? 'Cancelled' : entry.error ? entry.error.slice(0, 40) : 'Failed'}
               </span>
               <div className="flex-1" />
               {canRetry ? (

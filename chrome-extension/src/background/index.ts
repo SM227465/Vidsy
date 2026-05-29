@@ -2,6 +2,7 @@
 import 'webextension-polyfill';
 import { handleNetworkDetection, upsertDetection, clearTabDetections, setMainVideoPresent } from './lib/detection';
 import { handleDownload, pauseDownload, cancelDownload } from './lib/download';
+import { reorderQueueItem } from './lib/download-queue';
 import { setupHeaderCapture, cleanupStaleDnrRules } from './lib/header-capture';
 import { deriveKind, deriveFileName } from './lib/media-utils';
 import { classifyAndAddUrl } from './lib/paste-url';
@@ -76,6 +77,11 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
       sendResponse({ ok: true });
       return;
     }
+    if (msg.type === MEDIA_MESSAGE.QUEUE_REORDER) {
+      const ok = await reorderQueueItem(msg.payload.key, msg.payload.direction);
+      sendResponse({ ok });
+      return;
+    }
     if (msg.type === MEDIA_MESSAGE.MAIN_VIDEO_PRESENT) {
       const tabId = sender.tab?.id;
       if (tabId !== undefined) setMainVideoPresent(tabId, msg.payload.present);
@@ -93,6 +99,27 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
           // Tab may be gone — proceed without pageUrl
         }
       }
+      const result = await classifyAndAddUrl(msg.payload.url, tabId, pageUrl);
+      sendResponse(result);
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.PICKER_START) {
+      const tabId = msg.payload?.tabId ?? sender.tab?.id;
+      if (tabId === undefined) {
+        sendResponse({ ok: false, error: 'No active tab' });
+        return;
+      }
+      try {
+        await chrome.tabs.sendMessage(tabId, { type: MEDIA_MESSAGE.PICKER_ACTIVATE });
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.PICKER_PICKED) {
+      const tabId = sender.tab?.id;
+      const pageUrl = sender.tab?.url;
       const result = await classifyAndAddUrl(msg.payload.url, tabId, pageUrl);
       sendResponse(result);
       return;
@@ -246,6 +273,18 @@ const createContextMenus = () => {
 
 chrome.runtime.onInstalled.addListener(createContextMenus);
 chrome.runtime.onStartup.addListener(createContextMenus);
+
+// ─── Hotkey: Alt+Shift+V activates the element picker on the active tab ───
+chrome.commands.onCommand.addListener(async command => {
+  if (command !== 'activate-picker') return;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: MEDIA_MESSAGE.PICKER_ACTIVATE });
+  } catch {
+    // Tab may not have a content script (chrome://, web store, etc.)
+  }
+});
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === 'download-media') {

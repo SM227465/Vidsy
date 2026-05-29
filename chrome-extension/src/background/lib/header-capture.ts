@@ -71,6 +71,11 @@ const injectHeadersForDownload = async (cdnUrl: string, headers: Record<string, 
           },
           condition: {
             requestDomains: [hostname],
+            // tabIds: [-1] scopes the rewrite to extension-originated requests
+            // (offscreen doc, service worker). Without this, the Referer/Origin
+            // rewrite leaks into normal browsing on any open tab that hits the
+            // same CDN hostname.
+            tabIds: [-1],
             // Omit resourceTypes so it catches sub_frame, media, xmlhttprequest, etc.
           },
         },

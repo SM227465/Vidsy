@@ -125,6 +125,56 @@ export const SettingsPanel = ({ isLight }: { isLight: boolean }) => {
 
         <div className={divider} />
 
+        {/* Concurrent downloads */}
+        <div className="flex items-center justify-between px-5 py-4">
+          <div className="flex items-center gap-3">
+            <div
+              className={cn(
+                'flex h-9 w-9 items-center justify-center rounded-xl',
+                isLight ? 'bg-emerald-100 text-emerald-600' : 'bg-emerald-500/10 text-emerald-400',
+              )}>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round">
+                <path d="M12 2 2 7l10 5 10-5-10-5z" />
+                <path d="M2 17l10 5 10-5" />
+                <path d="M2 12l10 5 10-5" />
+              </svg>
+            </div>
+            <div>
+              <p className={cn('text-sm font-medium', label)}>Concurrent downloads</p>
+              <p className={cn('text-xs', sub)}>
+                Higher values speed up downloads but stress RAM during HLS/DASH muxing
+              </p>
+            </div>
+          </div>
+          <select
+            value={settings?.downloadConcurrency ?? 1}
+            onChange={e => mediaSettingsStorage.set(prev => ({ ...prev, downloadConcurrency: Number(e.target.value) }))}
+            className={cn(
+              'rounded-lg border px-3 py-1.5 text-sm font-medium outline-none transition',
+              isLight
+                ? 'border-gray-200 bg-gray-50 text-gray-700 hover:border-gray-300'
+                : 'border-white/[0.08] bg-white/[0.04] text-gray-300 hover:border-white/[0.15]',
+            )}>
+            <option value={1}>1</option>
+            <option value={2}>2</option>
+            <option value={3}>3</option>
+            <option value={4}>4</option>
+            <option value={6}>6</option>
+            <option value={8}>8</option>
+          </select>
+        </div>
+
+        <div className={divider} />
+
         {/* History limit */}
         <div className="flex items-center justify-between px-5 py-4">
           <div className="flex items-center gap-3">
