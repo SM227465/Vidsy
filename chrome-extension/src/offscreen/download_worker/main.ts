@@ -100,14 +100,22 @@ const parallelFetchToOpfs = async (args: {
       completedCount++;
       if (chunkStates && chunkStates[index]) chunkStates[index].status = 'done';
       flushInOrder();
-      const written = opfs.size(opfsName);
+      // For Range downloads (chunkStates present) we report the sum of bytes
+      // across all chunks that have completed fetching, not opfs.size(). The
+      // two diverge when a low-indexed chunk is slow — its peers complete
+      // and sit in memory waiting for the in-order flush, so opfs.size lags
+      // by hundreds of MB. The chunk sum reflects real throughput and keeps
+      // speed / ETA / status honest. Other paths still use the write cursor.
+      const fetchedBytes = chunkStates
+        ? chunkStates.reduce((sum, c) => (c.status === 'done' ? sum + (c.end - c.start + 1) : sum), 0)
+        : opfs.size(opfsName);
       const estimatedBytes =
-        totalEstimatedBytes ?? (completedCount > 0 ? Math.round((written / completedCount) * count) : undefined);
+        totalEstimatedBytes ?? (completedCount > 0 ? Math.round((fetchedBytes / completedCount) * count) : undefined);
       post({
         type: 'progress',
         jobKey,
         stage,
-        downloadedBytes: written,
+        downloadedBytes: fetchedBytes,
         estimatedBytes,
         chunks: chunkStates ? chunkStates.map(c => ({ ...c })) : undefined,
       });
@@ -117,32 +125,59 @@ const parallelFetchToOpfs = async (args: {
     }
   };
 
-  await new Promise<void>(resolve => {
-    const tick = (): void => {
-      if (signal.aborted || errors.length > 0) {
-        if (inFlight === 0) resolve();
-        return;
-      }
-      while (inFlight < MAX_CONCURRENT && cursor < count) {
-        const i = cursor++;
-        inFlight++;
-        dispatchOne(i).finally(() => {
-          inFlight--;
-          if (finishedDispatching && inFlight === 0) resolve();
-          else tick();
-        });
-      }
-      if (cursor >= count) {
-        finishedDispatching = true;
-        if (inFlight === 0) resolve();
-      }
-    };
-    tick();
-  });
+  // Periodic snapshot tick — keeps the UI's stats panel live even when no
+  // chunk has completed in the last few hundred ms (slow links, big chunks).
+  // The dispatchOne post fires on chunk completion; this fires on a 500ms
+  // wall-clock cadence with the latest accumulated byte count + chunk states.
+  const postSnapshot = (): void => {
+    const fetchedBytes = chunkStates
+      ? chunkStates.reduce((sum, c) => (c.status === 'done' ? sum + (c.end - c.start + 1) : sum), 0)
+      : opfs.size(opfsName);
+    const estBytes =
+      totalEstimatedBytes ?? (completedCount > 0 ? Math.round((fetchedBytes / completedCount) * count) : undefined);
+    post({
+      type: 'progress',
+      jobKey,
+      stage,
+      downloadedBytes: fetchedBytes,
+      estimatedBytes: estBytes,
+      chunks: chunkStates ? chunkStates.map(c => ({ ...c })) : undefined,
+    });
+  };
+  const snapshotHandle: ReturnType<typeof setInterval> = setInterval(postSnapshot, 500);
+
+  try {
+    await new Promise<void>(resolve => {
+      const tick = (): void => {
+        if (signal.aborted || errors.length > 0) {
+          if (inFlight === 0) resolve();
+          return;
+        }
+        while (inFlight < MAX_CONCURRENT && cursor < count) {
+          const i = cursor++;
+          inFlight++;
+          dispatchOne(i).finally(() => {
+            inFlight--;
+            if (finishedDispatching && inFlight === 0) resolve();
+            else tick();
+          });
+        }
+        if (cursor >= count) {
+          finishedDispatching = true;
+          if (inFlight === 0) resolve();
+        }
+      };
+      tick();
+    });
+  } finally {
+    clearInterval(snapshotHandle);
+  }
 
   if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
   if (errors.length > 0) throw new Error(`Failed ${errors.length} parts: ${errors[0].message}`);
   flushInOrder();
+  // One final snapshot so the UI sees the post-flush state immediately.
+  postSnapshot();
 };
 
 const handleFetchSegments = async (req: FetchSegmentsRequest): Promise<void> => {

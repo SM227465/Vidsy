@@ -85,6 +85,8 @@ const urlPathExtension = (url: string | undefined): string => {
   }
 };
 
+const LARGE_OPAQUE_THRESHOLD = 50 * 1024 * 1024; // 50 MB
+
 const isMediaDownload = (item: chrome.downloads.DownloadItem): boolean => {
   const mime = (item.mime ?? '').toLowerCase();
   if (mime.startsWith('video/') || mime.startsWith('audio/')) return true;
@@ -93,7 +95,15 @@ const isMediaDownload = (item: chrome.downloads.DownloadItem): boolean => {
   // preserve the extension even when filename is blank).
   if (mime === 'application/octet-stream' || mime === '') {
     const ext = extensionOf(item.filename) || urlPathExtension(item.finalUrl || item.url);
-    return MEDIA_EXTENSIONS.has(ext);
+    if (MEDIA_EXTENSIONS.has(ext)) return true;
+    // Last resort: some file hosts hide the real filename behind an opaque
+    // token URL (e.g. https://host/<hash>?token=...) and serve it as
+    // application/octet-stream with an empty Content-Disposition filename.
+    // For those we use byte-size as a heuristic — large opaque downloads
+    // are overwhelmingly media. The modal still lets the user pick
+    // 'Open in Browser' if we guessed wrong on a big installer/ISO.
+    const size = item.fileSize > 0 ? item.fileSize : item.totalBytes;
+    if (size && size >= LARGE_OPAQUE_THRESHOLD) return true;
   }
   return false;
 };
@@ -221,15 +231,9 @@ const handleCreated = (item: chrome.downloads.DownloadItem): void => {
     return;
   }
 
-  // Sync setting gate. If the cache is uninitialized (SW just woke up), skip
-  // this download and kick off the async load so the next one is handled.
+  // Setting is definitively OFF — skip.
   if (cachedEnabled === false) {
     console.log('[Vidsy] skip: interceptor disabled');
-    return;
-  }
-  if (cachedEnabled === null) {
-    console.log('[Vidsy] skip: setting cache not yet populated; loading for next time');
-    void readEnabled();
     return;
   }
 
@@ -238,15 +242,33 @@ const handleCreated = (item: chrome.downloads.DownloadItem): void => {
     return;
   }
 
-  console.log('[Vidsy] intercepting:', { url, mime: item.mime, fileSize: item.fileSize, referrer: item.referrer });
+  console.log('[Vidsy] intercepting:', {
+    url,
+    mime: item.mime,
+    fileSize: item.fileSize,
+    referrer: item.referrer,
+    cachedEnabled,
+  });
 
-  // Cancel SYNCHRONOUSLY (no awaits before this point) so the save-as dialog
-  // never gets shown. The API calls are async but we don't await them here.
+  // Optimistic cancel — fires synchronously regardless of whether the cache
+  // has finished loading yet. Without this, a download arriving immediately
+  // after SW wake-up would slip through with the native save-as dialog. If
+  // the cache resolves to disabled afterward (rare — setting is ON by
+  // default), we re-issue the browser download below.
   chrome.downloads.cancel(item.id).catch(() => undefined);
   chrome.downloads.erase({ id: item.id }).catch(() => undefined);
 
-  // Async tail: find a tab with content-ui and send the modal.
   void (async () => {
+    // Wait for the cache if it hadn't loaded yet at the sync gate above,
+    // then decide whether to show the modal or unwind by re-issuing.
+    if (cachedEnabled === null) {
+      const enabled = await readEnabled();
+      if (!enabled) {
+        console.log('[Vidsy] cache loaded as disabled — resuming browser download');
+        resumeBrowserDownload(url, item.filename ? item.filename.split('/').pop() : undefined);
+        return;
+      }
+    }
     const tab = await findHostTab(item.referrer);
     await sendInterceptToTab(tab, item);
   })();
@@ -301,7 +323,7 @@ const openDownloadsWindow = async (key: string): Promise<void> => {
     url: chrome.runtime.getURL(url),
     type: 'popup',
     width: 480,
-    height: 600,
+    height: 460,
     focused: true,
   });
   if (win?.id !== undefined) downloadWindowIds.set(key, win.id);

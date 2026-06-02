@@ -102,6 +102,23 @@ export const DownloadDetailsView = ({ downloads, isLight }: Props) => {
     return () => clearInterval(id);
   }, []);
 
+  // Auto-resize the standalone window to match the current view state. Three
+  // discrete heights cover the meaningful layouts; we only nudge the window
+  // when its actual outer height drifts noticeably from the target so we
+  // don't fight a user who has manually resized.
+  const hasChunks = !!entry?.chunks && entry.chunks.length > 0;
+  const isSuccess = entry?.stage === 'success';
+  useEffect(() => {
+    if (typeof chrome === 'undefined' || !chrome.windows?.getCurrent) return;
+    if (typeof window === 'undefined' || window.location.hash !== '#download-details') return;
+    const targetHeight = isSuccess ? 380 : connectionsOpen && hasChunks ? 640 : 460;
+    if (Math.abs(window.outerHeight - targetHeight) < 12) return;
+    void chrome.windows.getCurrent().then(win => {
+      if (win.id === undefined) return;
+      void chrome.windows.update(win.id, { height: targetHeight });
+    });
+  }, [isSuccess, connectionsOpen, hasChunks]);
+
   useEffect(() => {
     if (!entry) return;
     // Reset on switch to a different download.
@@ -397,6 +414,15 @@ export const DownloadDetailsView = ({ downloads, isLight }: Props) => {
                     if (status === 'error') return isLight ? 'text-red-700' : 'text-red-400';
                     return muted;
                   };
+                  // Counts for the summary row
+                  const doneCount = chunks.filter(c => c.status === 'done').length;
+                  const fetchingChunks = chunks.filter(c => c.status === 'fetching');
+                  const errorChunks = chunks.filter(c => c.status === 'error');
+                  const pendingCount = chunks.length - doneCount - fetchingChunks.length - errorChunks.length;
+                  // Show currently-active fetchers (and any errors) — this matches the
+                  // 'connections' concept (≤ MAX_CONCURRENT live workers picking up the
+                  // next byte-range chunk) rather than dumping every chunk's lifecycle.
+                  const activeRows = [...fetchingChunks, ...errorChunks];
                   return (
                     <>
                       {/* Position bar */}
@@ -410,35 +436,61 @@ export const DownloadDetailsView = ({ downloads, isLight }: Props) => {
                               key={c.i}
                               className={`absolute bottom-0 top-0 ${colorFor(c.status)} ${c.status === 'fetching' ? 'animate-pulse' : ''}`}
                               style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                              title={`Connection ${c.i + 1}: ${c.status}`}
+                              title={`Chunk ${c.i + 1}: ${c.status}`}
                             />
                           );
                         })}
                       </div>
 
-                      {/* Chunk table */}
-                      <table className="mt-3 w-full text-[10px]">
-                        <thead>
-                          <tr className={labelCol}>
-                            <th className="pb-1.5 text-left font-medium">N°</th>
-                            <th className="pb-1.5 text-right font-medium">Range</th>
-                            <th className="pb-1.5 text-right font-medium">Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {chunks.map(c => (
-                            <tr key={c.i}>
-                              <td className={`py-0.5 ${valueCol}`}>{c.i + 1}</td>
-                              <td className={`py-0.5 text-right font-mono ${valueCol}`}>
-                                {formatBytes(c.start)} – {formatBytes(c.end + 1)}
-                              </td>
-                              <td className={`py-0.5 text-right capitalize ${statusTextColor(c.status)}`}>
-                                {c.status}
-                              </td>
+                      {/* Status summary */}
+                      <div className={`mt-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] ${labelCol}`}>
+                        <span>
+                          <span className={isLight ? 'text-emerald-700' : 'text-emerald-400'}>● Done</span>{' '}
+                          <span className={valueCol}>{doneCount}</span>
+                        </span>
+                        <span>
+                          <span className={isLight ? 'text-blue-700' : 'text-blue-400'}>● Fetching</span>{' '}
+                          <span className={valueCol}>{fetchingChunks.length}</span>
+                        </span>
+                        <span>
+                          <span className={muted}>● Pending</span> <span className={valueCol}>{pendingCount}</span>
+                        </span>
+                        {errorChunks.length > 0 && (
+                          <span>
+                            <span className={isLight ? 'text-red-700' : 'text-red-400'}>● Failed</span>{' '}
+                            <span className={valueCol}>{errorChunks.length}</span>
+                          </span>
+                        )}
+                        <span className="ml-auto">
+                          Total <span className={valueCol}>{chunks.length}</span>
+                        </span>
+                      </div>
+
+                      {/* Active connections table — live fetchers and any errors */}
+                      {activeRows.length > 0 && (
+                        <table className="mt-3 w-full text-[10px]">
+                          <thead>
+                            <tr className={labelCol}>
+                              <th className="pb-1.5 text-left font-medium">N°</th>
+                              <th className="pb-1.5 text-right font-medium">Range</th>
+                              <th className="pb-1.5 text-right font-medium">Status</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody>
+                            {activeRows.map(c => (
+                              <tr key={c.i}>
+                                <td className={`py-0.5 ${valueCol}`}>{c.i + 1}</td>
+                                <td className={`py-0.5 text-right font-mono ${valueCol}`}>
+                                  {formatBytes(c.start)} – {formatBytes(c.end + 1)}
+                                </td>
+                                <td className={`py-0.5 text-right capitalize ${statusTextColor(c.status)}`}>
+                                  {c.status}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
                     </>
                   );
                 })()
