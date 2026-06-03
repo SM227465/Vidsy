@@ -3,6 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <title>Popup</title>
+    <script>
+      // Override the popup sizing variables BEFORE any stylesheet loads, so
+      // the body's first paint already uses the standalone-window dimensions
+      // instead of the action-popup defaults. Setting the variables on the
+      // root inline propagates through the cascade to every rule that
+      // references them in index.css.
+      if (typeof location !== 'undefined' && location.hash === '#download-details') {
+        const r = document.documentElement.style;
+        r.setProperty('--vidsy-popup-w', '100%');
+        r.setProperty('--vidsy-popup-h', '100%');
+        r.setProperty('--vidsy-popup-min-h', '0');
+        r.setProperty('--vidsy-popup-max-h', 'none');
+        r.setProperty('--vidsy-popup-overflow', 'visible');
+      }
+    </script>
   </head>
 
   <body>

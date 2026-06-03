@@ -1,7 +1,7 @@
 {
   "extensionDescription": {
     "description": "Extension description",
-    "message": "웹 페이지에서 비디오와 오디오를 감지하고 다운로드합니다."
+    "message": "웹 페이지에서 비디오와 오디오를 감지하고 다운로드합니다. 멀티 커넥션 HTTP/HLS/DASH 지원과 브라우저 다운로드 가로채기 옵션 제공."
   },
   "extensionName": {
     "description": "Extension name",

@@ -1,4 +1,5 @@
 import { DropdownPanel } from './components/DropdownPanel';
+import { InterceptModal } from './components/InterceptModal';
 import { PillBar } from './components/PillBar';
 import { FONT } from './components/tokens';
 import { ACTIVE_STAGES, pickBestVariant, qLabel, buildRows } from './lib/media-helpers';
@@ -78,8 +79,27 @@ const App = () => {
   const [open, setOpen] = useState(false);
   const [busyUrl, setBusyUrl] = useState<string | null>(null);
   const [isHovered, setIsHovered] = useState(false);
+  const [intercept, setIntercept] = useState<{
+    url: string;
+    fileName?: string;
+    mime?: string;
+    fileSize?: number;
+    referrer?: string;
+  } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const prevVideoRef = useRef<VideoEntry | undefined>(undefined);
+
+  /* Download intercept: background cancels a media download and asks us to
+     show a modal so the user can route it through Vidsy or open in browser. */
+  useEffect(() => {
+    const handler = (message: { type?: string; payload?: unknown }) => {
+      if (message?.type === MEDIA_MESSAGE.INTERCEPT_SHOW) {
+        setIntercept(message.payload as typeof intercept);
+      }
+    };
+    chrome.runtime.onMessage.addListener(handler);
+    return () => chrome.runtime.onMessage.removeListener(handler);
+  }, []);
 
   /* Outside-click closes dropdown
      IMPORTANT: The content-ui runs inside a shadow DOM. At document level,
@@ -152,7 +172,9 @@ const App = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [downloads]);
 
-  if (tabItems.length === 0 || dismissed) return null;
+  const interceptModal = intercept ? <InterceptModal intercept={intercept} onClose={() => setIntercept(null)} /> : null;
+
+  if (tabItems.length === 0 || dismissed) return interceptModal;
 
   /* active progress */
   const primary = tabItems[0];
@@ -182,7 +204,7 @@ const App = () => {
     prevVideoRef.current = effectiveVideo;
   }
 
-  if (!effectiveVideo) return null;
+  if (!effectiveVideo) return interceptModal;
 
   const vr = effectiveVideo.rect;
   const right = vr ? window.innerWidth - vr.right + 8 : 12;
@@ -219,41 +241,44 @@ const App = () => {
   const bestQLabel = bestVariant ? qLabel(bestVariant) : '';
 
   return (
-    <div
-      ref={ref}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{ position: 'fixed', top, right, zIndex: 2147483647, pointerEvents: 'auto', fontFamily: FONT }}>
-      <PillBar
-        primary={primary}
-        isBusy={isBusy}
-        prog={prog}
-        pct={pct}
-        bestUrl={bestUrl}
-        bestQLabel={bestQLabel}
-        open={open}
-        stageShort={stageShort}
-        onMainClick={() => {
-          if (isBusy) {
-            if (activeItem) doCancel(activeItem.url);
-          } else {
-            doDownload(primary, bestUrl);
-          }
-        }}
-        onToggleOpen={() => setOpen(o => !o)}
-        onDismiss={() => setDismissed(true)}
-      />
-
-      {open && !isBusy && (
-        <DropdownPanel
-          rows={rows}
+    <>
+      {interceptModal}
+      <div
+        ref={ref}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        style={{ position: 'fixed', top, right, zIndex: 2147483647, pointerEvents: 'auto', fontFamily: FONT }}>
+        <PillBar
           primary={primary}
+          isBusy={isBusy}
+          prog={prog}
+          pct={pct}
           bestUrl={bestUrl}
           bestQLabel={bestQLabel}
-          onDownload={doDownload}
+          open={open}
+          stageShort={stageShort}
+          onMainClick={() => {
+            if (isBusy) {
+              if (activeItem) doCancel(activeItem.url);
+            } else {
+              doDownload(primary, bestUrl);
+            }
+          }}
+          onToggleOpen={() => setOpen(o => !o)}
+          onDismiss={() => setDismissed(true)}
         />
-      )}
-    </div>
+
+        {open && !isBusy && (
+          <DropdownPanel
+            rows={rows}
+            primary={primary}
+            bestUrl={bestUrl}
+            bestQLabel={bestQLabel}
+            onDownload={doDownload}
+          />
+        )}
+      </div>
+    </>
   );
 };
 

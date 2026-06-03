@@ -1,5 +1,5 @@
 import { mediaDownloadsStorage } from '@extension/storage';
-import type { MediaDownloadProgress, MediaDownloadState, MediaItem } from '@extension/shared';
+import type { ChunkProgress, MediaDownloadProgress, MediaDownloadState, MediaItem } from '@extension/shared';
 
 type ProgressUpdate = {
   stage:
@@ -18,6 +18,7 @@ type ProgressUpdate = {
   error?: string;
   muxPercent?: number;
   downloadId?: number;
+  chunks?: ChunkProgress[];
 };
 
 type ProgressContext = {
@@ -41,6 +42,7 @@ export const updateProgress = async (key: string, progress: ProgressUpdate, cont
     outputFormat: context?.outputFormat ?? existing?.outputFormat,
     startedAt: existing?.startedAt ?? now,
     updatedAt: now,
+    chunks: progress.chunks ?? existing?.chunks,
   };
   const next: MediaDownloadState = { ...current, [key]: entry };
   await mediaDownloadsStorage.set(next);

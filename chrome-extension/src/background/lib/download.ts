@@ -5,7 +5,7 @@ import { dlLog } from './logger';
 import { createId, deriveKind, deriveFileName, isHlsKind, isDashKind, sanitizeFileName } from './media-utils';
 import { updateProgress } from './progress';
 import { buildFilenameContext, renderFilenameTemplate } from '@extension/shared';
-import { mediaSettingsStorage } from '@extension/storage';
+import { mediaDownloadsStorage, mediaSettingsStorage } from '@extension/storage';
 import type { MEDIA_MESSAGE, MediaItem, MediaMessage, SubtitleFormat } from '@extension/shared';
 
 let offscreenCreated = false;
@@ -331,7 +331,11 @@ const runDownloadJob = async (payload: DownloadPayload) => {
     if (isAbort) {
       const stage = wasPaused ? 'paused' : 'cancelled';
       dlLog(`handleDownload: ${stage}`);
-      await updateProgress(key, { stage, downloadedBytes: 0 });
+      // On pause: keep the existing downloadedBytes count so the UI shows
+      // where we left off (the chunks are still on disk and will be reused
+      // on resume). On cancel: reset to 0 — the OPFS file is purged anyway.
+      const preservedBytes = wasPaused ? ((await mediaDownloadsStorage.get())[key]?.downloadedBytes ?? 0) : 0;
+      await updateProgress(key, { stage, downloadedBytes: preservedBytes });
       return { ok: false, cancelled: true, paused: wasPaused } as const;
     }
 

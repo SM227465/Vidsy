@@ -81,6 +81,25 @@ type MediaSettings = {
   // muxes are RAM- and OPFS-bandwidth-heavy and running two simultaneously
   // degrades both. Users with headroom can bump this from the options page.
   downloadConcurrency: number;
+  // Intercept browser-initiated video/audio downloads and offer to handle them
+  // through Vidsy. Default ON — the modal lets the user choose "Open in
+  // Browser" per-download, and there's a settings toggle to disable entirely.
+  enableDownloadInterceptor: boolean;
+  // Number of parallel HTTP Range connections per single download. Default 8.
+  // Higher values can speed up downloads on Range-capable CDNs but hammer the
+  // server; lower values are friendlier on flaky links. Clamped at runtime
+  // to [1, 16].
+  downloadConnectionsPerFile: number;
+  // Auto-close the standalone progress window a few seconds after a download
+  // finishes successfully. Off by default — most users want to see the
+  // Open / Open folder buttons. Toggled via a checkbox on the Complete view.
+  autoCloseOnComplete: boolean;
+  // Tracks whether the user has dismissed the one-time hint that appears on
+  // the intercept modal recommending they disable Chrome's "Ask where to
+  // save each file" setting (which causes a brief native save-as flash
+  // before our cancel can dismiss it — a race we can't win from extension
+  // land). Sticky once dismissed.
+  hasSeenSaveAsHint: boolean;
 };
 
 const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
@@ -88,6 +107,10 @@ const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
   maxHistory: 30,
   filenameTemplate: '',
   downloadConcurrency: 1,
+  enableDownloadInterceptor: true,
+  downloadConnectionsPerFile: 8,
+  autoCloseOnComplete: false,
+  hasSeenSaveAsHint: false,
 };
 
 export const mediaDetectionsStorage = createStorage<MediaDetectionState>(

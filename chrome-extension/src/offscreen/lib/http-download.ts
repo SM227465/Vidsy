@@ -13,7 +13,7 @@ import {
 
 const MIN_SIZE_FOR_PARALLEL = 5 * 1024 * 1024; // 5 MB
 const TARGET_CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB per range request
-const MAX_PARALLEL_CHUNKS = 6;
+const MAX_PARALLEL_CHUNKS = 8;
 const PROBE_TIMEOUT_MS = 10_000;
 
 type RangeProbe = {
@@ -72,8 +72,12 @@ const computeRanges = (totalBytes: number): { start: number; end: number }[] => 
   return ranges;
 };
 
+// Deterministic OPFS filename per (key, tag, ext) so a paused download can be
+// resumed: the next attempt opens the SAME file that holds the bytes already
+// fetched. Across browser sessions the offscreen-doc startup GC purges the
+// file regardless, but in-session pause / resume works.
 const opfsNameFor = (key: string, tag: string, ext: string): string =>
-  `http-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}-${tag}-${Date.now().toString(36)}.${ext}`;
+  `http-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}-${tag}.${ext}`;
 
 const mp3TranscodeArgs = (input: string, output: string): string[] => [
   '-i',

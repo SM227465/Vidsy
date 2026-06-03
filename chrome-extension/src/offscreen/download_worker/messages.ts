@@ -2,6 +2,7 @@
 // The worker owns OPFS; the main thread still runs ffmpeg.wasm (mounts OPFS Files via WORKERFS).
 
 import type { HlsKeyInfo } from '../lib/m3u8-parser';
+import type { ChunkProgress } from '@extension/shared';
 
 export type JobKey = string;
 
@@ -40,6 +41,14 @@ export type FetchRangesRequest = {
   ranges: { start: number; end: number }[];
   totalBytes: number;
   stage: 'download-video' | 'download-audio';
+  // Prior chunk states from a paused or interrupted run of this same key.
+  // The worker uses these to skip dispatching chunks that already completed
+  // (their bytes are already at the right offset in OPFS), so resume picks
+  // up from the first incomplete chunk instead of restarting from byte 0.
+  resumeChunks?: ChunkProgress[];
+  // Cap on in-flight Range fetches for this job. Defaults to the worker's
+  // MAX_CONCURRENT constant when not supplied. Clamped at receiver to [1, 16].
+  maxConnections?: number;
 };
 
 export type GetFileRequest = {
@@ -97,6 +106,7 @@ export type ProgressUpdate = {
   downloadedBytes: number;
   estimatedBytes?: number;
   muxPercent?: number;
+  chunks?: ChunkProgress[];
 };
 
 export type FetchDone = {
