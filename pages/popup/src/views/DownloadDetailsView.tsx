@@ -8,7 +8,8 @@
 // each parallel connection. That needs the offscreen worker to report per-
 // chunk progress — currently we only get aggregate bytes.
 
-import { MEDIA_MESSAGE, formatSpeed } from '@extension/shared';
+import { MEDIA_MESSAGE, formatSpeed, useStorage } from '@extension/shared';
+import { mediaSettingsStorage } from '@extension/storage';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChunkProgress, MediaDownloadProgress } from '@extension/shared';
 
@@ -85,6 +86,18 @@ export const DownloadDetailsView = ({ downloads, isLight }: Props) => {
     if (dlKey) return downloads[dlKey] ?? null;
     return pickFocusedDownload(downloads);
   }, [downloads, dlKey]);
+  const settings = useStorage(mediaSettingsStorage);
+  const autoCloseOnComplete = settings?.autoCloseOnComplete ?? false;
+
+  // Schedule a window.close() a few seconds after the download succeeds, when
+  // the user has opted in via the Complete-view checkbox. Cleared if the
+  // setting flips off, or if the entry leaves the success state (e.g. they
+  // resume / start a new download in the same window).
+  useEffect(() => {
+    if (entry?.stage !== 'success' || !autoCloseOnComplete) return;
+    const timer = setTimeout(() => window.close(), 3000);
+    return () => clearTimeout(timer);
+  }, [entry?.stage, autoCloseOnComplete]);
 
   // Smoothed speed and start-time tracking.
   const prevRef = useRef<{ bytes: number; time: number } | null>(null);
@@ -303,6 +316,22 @@ export const DownloadDetailsView = ({ downloads, isLight }: Props) => {
               }`}>
               Close
             </button>
+          </div>
+
+          {/* Auto-close toggle + countdown hint */}
+          <div className="mt-3 flex items-center justify-between gap-2">
+            <label className={`flex items-center gap-2 text-[11px] ${muted}`}>
+              <input
+                type="checkbox"
+                checked={autoCloseOnComplete}
+                onChange={e =>
+                  void mediaSettingsStorage.set(prev => ({ ...prev, autoCloseOnComplete: e.target.checked }))
+                }
+                className="h-3 w-3 cursor-pointer accent-emerald-500"
+              />
+              <span className="cursor-pointer">Close window automatically next time</span>
+            </label>
+            {autoCloseOnComplete && <span className={`text-[10px] italic ${muted}`}>auto-closing…</span>}
           </div>
         </div>
       </div>

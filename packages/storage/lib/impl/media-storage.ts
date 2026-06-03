@@ -90,6 +90,10 @@ type MediaSettings = {
   // server; lower values are friendlier on flaky links. Clamped at runtime
   // to [1, 16].
   downloadConnectionsPerFile: number;
+  // Auto-close the standalone progress window a few seconds after a download
+  // finishes successfully. Off by default — most users want to see the
+  // Open / Open folder buttons. Toggled via a checkbox on the Complete view.
+  autoCloseOnComplete: boolean;
 };
 
 const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
@@ -99,6 +103,7 @@ const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
   downloadConcurrency: 1,
   enableDownloadInterceptor: true,
   downloadConnectionsPerFile: 8,
+  autoCloseOnComplete: false,
 };
 
 export const mediaDetectionsStorage = createStorage<MediaDetectionState>(
