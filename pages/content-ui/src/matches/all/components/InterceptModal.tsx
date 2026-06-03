@@ -1,5 +1,6 @@
 import { GLASS_PANEL, GLASS_BORDER, BLUR, TEXT, MUTED, HOVER, FONT } from './tokens';
 import { MEDIA_MESSAGE } from '@extension/shared';
+import { useState } from 'react';
 
 type Intercept = {
   url: string;
@@ -179,16 +180,23 @@ const buttonBase: React.CSSProperties = {
 };
 
 export const InterceptModal = ({ intercept, onClose }: { intercept: Intercept; onClose: () => void }) => {
-  const filename = intercept.fileName ?? 'Download';
+  const initialFilename = intercept.fileName ?? 'Download';
+  const [editedFilename, setEditedFilename] = useState(initialFilename);
   const size = formatBytes(intercept.fileSize);
   const kind = detectFileKind(intercept.mime, intercept.fileName);
   const category = categoryFromKind(kind);
   const kindStyle = KIND_STYLE[kind];
 
+  // Trim whitespace, fall back to the original if the user emptied the field.
+  const finalFilename = (() => {
+    const trimmed = editedFilename.trim();
+    return trimmed.length > 0 ? trimmed : initialFilename;
+  })();
+
   const startDownload = () => {
     void chrome.runtime.sendMessage({
       type: MEDIA_MESSAGE.INTERCEPT_DOWNLOAD_VIDSY,
-      payload: { url: intercept.url, fileName: intercept.fileName },
+      payload: { url: intercept.url, fileName: finalFilename },
     });
     onClose();
   };
@@ -196,7 +204,7 @@ export const InterceptModal = ({ intercept, onClose }: { intercept: Intercept; o
   const openInBrowser = () => {
     void chrome.runtime.sendMessage({
       type: MEDIA_MESSAGE.INTERCEPT_RESUME_BROWSER,
-      payload: { url: intercept.url, fileName: intercept.fileName },
+      payload: { url: intercept.url, fileName: finalFilename },
     });
     onClose();
   };
@@ -287,9 +295,31 @@ export const InterceptModal = ({ intercept, onClose }: { intercept: Intercept; o
             </div>
             <div style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 8 }}>
               <span style={fieldLabelStyle}>Save As</span>
-              <div style={fieldValueStyle} title={filename}>
-                {filename}
-              </div>
+              <input
+                type="text"
+                value={editedFilename}
+                onChange={e => setEditedFilename(e.target.value)}
+                onKeyDown={e => {
+                  // Don't let the page (or our modal's escape handler) intercept
+                  // key presses while the field has focus.
+                  e.stopPropagation();
+                  if (e.key === 'Enter') startDownload();
+                }}
+                style={{
+                  ...fieldValueStyle,
+                  outline: 'none',
+                }}
+                onFocus={e => {
+                  (e.currentTarget as HTMLInputElement).style.borderColor = 'rgba(59,130,246,0.55)';
+                  // Select the basename so the user can immediately overwrite
+                  // it without losing the extension.
+                  const val = (e.currentTarget as HTMLInputElement).value;
+                  const dot = val.lastIndexOf('.');
+                  if (dot > 0) (e.currentTarget as HTMLInputElement).setSelectionRange(0, dot);
+                }}
+                onBlur={e => ((e.currentTarget as HTMLInputElement).style.borderColor = GLASS_BORDER)}
+                title={finalFilename}
+              />
             </div>
             <div style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 8 }}>
               <span style={fieldLabelStyle}>Category</span>
