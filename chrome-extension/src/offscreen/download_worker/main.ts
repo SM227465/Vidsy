@@ -32,6 +32,7 @@ const fetchWithRetry = async (
   signal: AbortSignal,
   extraHeaders?: Record<string, string>,
   retries = MAX_RETRIES,
+  onBytes?: (downloadedSoFar: number) => void,
 ): Promise<ArrayBuffer> => {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
@@ -39,7 +40,31 @@ const fetchWithRetry = async (
       const combined = AbortSignal.any([signal, timeoutSignal]);
       const res = await fetch(url, { signal: combined, credentials: 'include', headers: extraHeaders });
       if (!res.ok && res.status !== 206) throw new Error(`HTTP ${res.status}`);
-      return await res.arrayBuffer();
+      // Fast path: no per-byte progress wanted — let fetch buffer the body
+      // (slightly more efficient than streaming + concatenating manually).
+      if (!onBytes) return await res.arrayBuffer();
+      // Streaming path: read the body in chunks so the worker can report
+      // bytes-per-connection live. Used by the HTTP range download path so
+      // the standalone window can show "Fetching · 3.2/8 MB" per chunk.
+      if (!res.body) return await res.arrayBuffer();
+      const reader = res.body.getReader();
+      const parts: Uint8Array[] = [];
+      let total = 0;
+      onBytes(0); // signal "starting" so a retry resets a prior partial count
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+        total += value.byteLength;
+        onBytes(total);
+      }
+      const out = new Uint8Array(total);
+      let offset = 0;
+      for (const p of parts) {
+        out.set(p, offset);
+        offset += p.byteLength;
+      }
+      return out.buffer;
     } catch (err) {
       if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
       if (attempt === retries - 1) throw err;
@@ -59,7 +84,7 @@ const fetchWithRetry = async (
 const parallelFetchToOpfs = async (args: {
   opfsName: string;
   count: number;
-  fetchOne: (i: number, signal: AbortSignal) => Promise<ArrayBuffer>;
+  fetchOne: (i: number, signal: AbortSignal, onBytes?: (downloaded: number) => void) => Promise<ArrayBuffer>;
   stage: 'download-video' | 'download-audio';
   jobKey: string;
   signal: AbortSignal;
@@ -80,6 +105,7 @@ const parallelFetchToOpfs = async (args: {
     i,
     start: m.start,
     end: m.end,
+    downloaded: 0,
     status: 'pending' as const,
   }));
 
@@ -94,8 +120,11 @@ const parallelFetchToOpfs = async (args: {
 
   const dispatchOne = async (index: number): Promise<void> => {
     if (chunkStates && chunkStates[index]) chunkStates[index].status = 'fetching';
+    const onBytes = (downloaded: number): void => {
+      if (chunkStates && chunkStates[index]) chunkStates[index].downloaded = downloaded;
+    };
     try {
-      const data = await fetchOne(index, signal);
+      const data = await fetchOne(index, signal, onBytes);
       pending.set(index, new Uint8Array(data));
       completedCount++;
       if (chunkStates && chunkStates[index]) chunkStates[index].status = 'done';
@@ -107,7 +136,11 @@ const parallelFetchToOpfs = async (args: {
       // by hundreds of MB. The chunk sum reflects real throughput and keeps
       // speed / ETA / status honest. Other paths still use the write cursor.
       const fetchedBytes = chunkStates
-        ? chunkStates.reduce((sum, c) => (c.status === 'done' ? sum + (c.end - c.start + 1) : sum), 0)
+        ? chunkStates.reduce((sum, c) => {
+            if (c.status === 'done') return sum + (c.end - c.start + 1);
+            if (c.status === 'fetching') return sum + c.downloaded;
+            return sum;
+          }, 0)
         : opfs.size(opfsName);
       const estimatedBytes =
         totalEstimatedBytes ?? (completedCount > 0 ? Math.round((fetchedBytes / completedCount) * count) : undefined);
@@ -131,7 +164,11 @@ const parallelFetchToOpfs = async (args: {
   // wall-clock cadence with the latest accumulated byte count + chunk states.
   const postSnapshot = (): void => {
     const fetchedBytes = chunkStates
-      ? chunkStates.reduce((sum, c) => (c.status === 'done' ? sum + (c.end - c.start + 1) : sum), 0)
+      ? chunkStates.reduce((sum, c) => {
+          if (c.status === 'done') return sum + (c.end - c.start + 1);
+          if (c.status === 'fetching') return sum + c.downloaded;
+          return sum;
+        }, 0)
       : opfs.size(opfsName);
     const estBytes =
       totalEstimatedBytes ?? (completedCount > 0 ? Math.round((fetchedBytes / completedCount) * count) : undefined);
@@ -234,9 +271,9 @@ const handleFetchRanges = async (req: FetchRangesRequest): Promise<void> => {
   try {
     await opfs.open(opfsName);
 
-    const fetchOne = (i: number, signal: AbortSignal): Promise<ArrayBuffer> => {
+    const fetchOne = (i: number, signal: AbortSignal, onBytes?: (downloaded: number) => void): Promise<ArrayBuffer> => {
       const { start, end } = ranges[i];
-      return fetchWithRetry(url, signal, { Range: `bytes=${start}-${end}` });
+      return fetchWithRetry(url, signal, { Range: `bytes=${start}-${end}` }, MAX_RETRIES, onBytes);
     };
 
     await parallelFetchToOpfs({

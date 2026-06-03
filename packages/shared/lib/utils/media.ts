@@ -82,6 +82,10 @@ export type ChunkProgress = {
   i: number; // 0-based chunk index
   start: number; // inclusive byte offset in the destination file
   end: number; // inclusive byte offset in the destination file
+  // Bytes downloaded so far for this chunk — updated live as the HTTP body
+  // streams in, so the UI can render per-connection throughput / fill state.
+  // For status === 'done' this equals (end - start + 1); for 'pending' it is 0.
+  downloaded: number;
   status: 'pending' | 'fetching' | 'done' | 'error';
 };
 

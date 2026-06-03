@@ -445,16 +445,35 @@ export const DownloadDetailsView = ({ downloads, isLight }: Props) => {
                   const activeRows = [...fetchingChunks, ...errorChunks];
                   return (
                     <>
-                      {/* Position bar */}
+                      {/* Position bar — each chunk renders a colored band, with
+                          in-flight chunks split into a faint background showing
+                          the chunk's full extent and a vivid foreground that
+                          fills as bytes arrive. */}
                       <div
                         className={`relative h-4 w-full overflow-hidden rounded ${isLight ? 'bg-gray-200' : 'bg-white/[0.06]'}`}>
                         {chunks.map(c => {
+                          const chunkSize = c.end - c.start + 1;
                           const leftPct = (c.start / totalForBar) * 100;
-                          const widthPct = ((c.end - c.start + 1) / totalForBar) * 100;
+                          const widthPct = (chunkSize / totalForBar) * 100;
+                          if (c.status === 'fetching') {
+                            const downloadedPct = Math.min(1, c.downloaded / Math.max(1, chunkSize));
+                            return (
+                              <div
+                                key={c.i}
+                                style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                                className="absolute bottom-0 top-0">
+                                <div className={`absolute inset-0 ${isLight ? 'bg-blue-200' : 'bg-blue-500/25'}`} />
+                                <div
+                                  className="absolute bottom-0 left-0 top-0 bg-blue-500"
+                                  style={{ width: `${downloadedPct * 100}%` }}
+                                />
+                              </div>
+                            );
+                          }
                           return (
                             <div
                               key={c.i}
-                              className={`absolute bottom-0 top-0 ${colorFor(c.status)} ${c.status === 'fetching' ? 'animate-pulse' : ''}`}
+                              className={`absolute bottom-0 top-0 ${colorFor(c.status)}`}
                               style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
                               title={`Chunk ${c.i + 1}: ${c.status}`}
                             />
@@ -493,21 +512,28 @@ export const DownloadDetailsView = ({ downloads, isLight }: Props) => {
                             <tr className={labelCol}>
                               <th className="pb-1.5 text-left font-medium">N°</th>
                               <th className="pb-1.5 text-right font-medium">Range</th>
+                              <th className="pb-1.5 text-right font-medium">Downloaded</th>
                               <th className="pb-1.5 text-right font-medium">Status</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {activeRows.map(c => (
-                              <tr key={c.i}>
-                                <td className={`py-0.5 ${valueCol}`}>{c.i + 1}</td>
-                                <td className={`py-0.5 text-right font-mono ${valueCol}`}>
-                                  {formatBytes(c.start)} – {formatBytes(c.end + 1)}
-                                </td>
-                                <td className={`py-0.5 text-right capitalize ${statusTextColor(c.status)}`}>
-                                  {c.status}
-                                </td>
-                              </tr>
-                            ))}
+                            {activeRows.map(c => {
+                              const chunkSize = c.end - c.start + 1;
+                              return (
+                                <tr key={c.i}>
+                                  <td className={`py-0.5 ${valueCol}`}>{c.i + 1}</td>
+                                  <td className={`py-0.5 text-right font-mono ${valueCol}`}>
+                                    {formatBytes(c.start)} – {formatBytes(c.end + 1)}
+                                  </td>
+                                  <td className={`py-0.5 text-right font-mono ${valueCol}`}>
+                                    {formatBytes(c.downloaded)} / {formatBytes(chunkSize)}
+                                  </td>
+                                  <td className={`py-0.5 text-right capitalize ${statusTextColor(c.status)}`}>
+                                    {c.status}
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       )}
