@@ -94,6 +94,12 @@ type MediaSettings = {
   // finishes successfully. Off by default — most users want to see the
   // Open / Open folder buttons. Toggled via a checkbox on the Complete view.
   autoCloseOnComplete: boolean;
+  // Tracks whether the user has dismissed the one-time hint that appears on
+  // the intercept modal recommending they disable Chrome's "Ask where to
+  // save each file" setting (which causes a brief native save-as flash
+  // before our cancel can dismiss it — a race we can't win from extension
+  // land). Sticky once dismissed.
+  hasSeenSaveAsHint: boolean;
 };
 
 const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
@@ -104,6 +110,7 @@ const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
   enableDownloadInterceptor: true,
   downloadConnectionsPerFile: 8,
   autoCloseOnComplete: false,
+  hasSeenSaveAsHint: false,
 };
 
 export const mediaDetectionsStorage = createStorage<MediaDetectionState>(

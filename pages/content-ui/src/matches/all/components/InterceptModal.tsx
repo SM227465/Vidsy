@@ -1,5 +1,6 @@
 import { GLASS_PANEL, GLASS_BORDER, BLUR, TEXT, MUTED, HOVER, FONT } from './tokens';
-import { MEDIA_MESSAGE } from '@extension/shared';
+import { MEDIA_MESSAGE, useStorage } from '@extension/shared';
+import { mediaSettingsStorage } from '@extension/storage';
 import { useState } from 'react';
 
 type Intercept = {
@@ -182,6 +183,11 @@ const buttonBase: React.CSSProperties = {
 export const InterceptModal = ({ intercept, onClose }: { intercept: Intercept; onClose: () => void }) => {
   const initialFilename = intercept.fileName ?? 'Download';
   const [editedFilename, setEditedFilename] = useState(initialFilename);
+  const settings = useStorage(mediaSettingsStorage);
+  const showSaveAsHint = !(settings?.hasSeenSaveAsHint ?? false);
+  const dismissSaveAsHint = () => {
+    void mediaSettingsStorage.set(prev => ({ ...prev, hasSeenSaveAsHint: true }));
+  };
   const size = formatBytes(intercept.fileSize);
   const kind = detectFileKind(intercept.mime, intercept.fileName);
   const category = categoryFromKind(kind);
@@ -282,6 +288,56 @@ export const InterceptModal = ({ intercept, onClose }: { intercept: Intercept; o
             ×
           </button>
         </div>
+
+        {/* One-time hint: Chrome's 'Ask where to save each file' setting causes
+            a brief native save-as flash before our cancel can dismiss it. We
+            can't suppress that from extension-land — point the user to the
+            Chrome setting that disables it. Dismissed forever once clicked. */}
+        {showSaveAsHint && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 8,
+              padding: '8px 14px',
+              background: 'rgba(245,158,11,0.08)',
+              borderBottom: `1px solid rgba(245,158,11,0.25)`,
+              fontSize: 10.5,
+              color: '#fbbf24',
+              lineHeight: 1.5,
+            }}>
+            <span style={{ flexShrink: 0, marginTop: 1 }}>💡</span>
+            <div style={{ flex: 1, color: TEXT, opacity: 0.85 }}>
+              See a brief native save-as dialog before this one? Open{' '}
+              <code
+                style={{
+                  background: 'rgba(255,255,255,0.06)',
+                  padding: '0 5px',
+                  borderRadius: 3,
+                  fontSize: 10,
+                  color: '#fbbf24',
+                }}>
+                chrome://settings/downloads
+              </code>{' '}
+              and turn off <em>Ask where to save each file before downloading</em> to skip it.
+            </div>
+            <button
+              onClick={dismissSaveAsHint}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: MUTED,
+                cursor: 'pointer',
+                fontSize: 14,
+                lineHeight: 1,
+                padding: '0 4px',
+                flexShrink: 0,
+              }}
+              title="Don't show again">
+              ×
+            </button>
+          </div>
+        )}
 
         {/* Body */}
         <div style={{ display: 'flex', gap: 14, padding: 16 }}>
