@@ -2,7 +2,6 @@
 // The worker owns OPFS. This module is the only place that speaks the worker protocol.
 
 import { updateProgress } from './progress';
-import { mediaDownloadsStorage, mediaSettingsStorage } from '@extension/storage';
 import type {
   FetchRangesRequest,
   FetchSegmentsRequest,
@@ -14,6 +13,12 @@ import type {
   WorkerResponse,
 } from '../download_worker/messages';
 import type { ChunkProgress } from '@extension/shared';
+
+// Storage is dynamically imported so its module-level createStorage calls
+// (which can throw in some offscreen contexts when chrome.storage is being
+// looked up by bracket access against a session storage area) can't break
+// the entire offscreen module's load. The actual resume / connection-count
+// reads run on first download, well after module init.
 
 let worker: Worker | null = null;
 let jobCounter = 0;
@@ -161,6 +166,7 @@ const findResumeChunks = async (
   totalBytes: number,
 ): Promise<ChunkProgress[] | undefined> => {
   try {
+    const { mediaDownloadsStorage } = await import('@extension/storage');
     const all = await mediaDownloadsStorage.get();
     const prior = all[jobKey];
     if (!prior?.chunks?.length) return undefined;
@@ -182,6 +188,7 @@ const findResumeChunks = async (
 
 const readMaxConnections = async (): Promise<number> => {
   try {
+    const { mediaSettingsStorage } = await import('@extension/storage');
     const s = await mediaSettingsStorage.get();
     return Math.max(1, Math.min(16, Math.floor(s.downloadConnectionsPerFile ?? 8)));
   } catch {
