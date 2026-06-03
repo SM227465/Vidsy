@@ -46,6 +46,9 @@ export type FetchRangesRequest = {
   // (their bytes are already at the right offset in OPFS), so resume picks
   // up from the first incomplete chunk instead of restarting from byte 0.
   resumeChunks?: ChunkProgress[];
+  // Cap on in-flight Range fetches for this job. Defaults to the worker's
+  // MAX_CONCURRENT constant when not supplied. Clamped at receiver to [1, 16].
+  maxConnections?: number;
 };
 
 export type GetFileRequest = {

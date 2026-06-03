@@ -91,8 +91,13 @@ const parallelFetchToOpfs = async (args: {
   totalEstimatedBytes?: number;
   chunkMeta?: Array<{ start: number; end: number }>;
   resumeChunks?: ChunkProgress[];
+  maxConcurrent?: number;
 }): Promise<void> => {
   const { opfsName, count, fetchOne, stage, jobKey, signal, totalEstimatedBytes, chunkMeta, resumeChunks } = args;
+  // Effective concurrency: caller-provided (range downloads with a setting),
+  // else worker default. Clamped to a safe band so a corrupted setting
+  // can't DoS the server or starve the dispatcher.
+  const maxConcurrent = Math.max(1, Math.min(16, args.maxConcurrent ?? MAX_CONCURRENT));
 
   const pending = new Map<number, Uint8Array>();
   let nextToWrite = 0;
@@ -208,7 +213,7 @@ const parallelFetchToOpfs = async (args: {
           if (inFlight === 0) resolve();
           return;
         }
-        while (inFlight < MAX_CONCURRENT && cursor < count) {
+        while (inFlight < maxConcurrent && cursor < count) {
           const i = cursor++;
           inFlight++;
           dispatchOne(i).finally(() => {
@@ -311,6 +316,7 @@ const handleFetchRanges = async (req: FetchRangesRequest): Promise<void> => {
       totalEstimatedBytes: knownTotal,
       chunkMeta: ranges,
       resumeChunks,
+      maxConcurrent: req.maxConnections,
     });
 
     await opfs.close(opfsName);

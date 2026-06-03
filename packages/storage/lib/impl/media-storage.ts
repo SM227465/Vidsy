@@ -85,6 +85,11 @@ type MediaSettings = {
   // through Vidsy. Default ON — the modal lets the user choose "Open in
   // Browser" per-download, and there's a settings toggle to disable entirely.
   enableDownloadInterceptor: boolean;
+  // Number of parallel HTTP Range connections per single download. Default 8.
+  // Higher values can speed up downloads on Range-capable CDNs but hammer the
+  // server; lower values are friendlier on flaky links. Clamped at runtime
+  // to [1, 16].
+  downloadConnectionsPerFile: number;
 };
 
 const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
@@ -93,6 +98,7 @@ const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
   filenameTemplate: '',
   downloadConcurrency: 1,
   enableDownloadInterceptor: true,
+  downloadConnectionsPerFile: 8,
 };
 
 export const mediaDetectionsStorage = createStorage<MediaDetectionState>(

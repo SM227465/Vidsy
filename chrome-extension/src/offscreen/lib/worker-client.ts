@@ -2,7 +2,7 @@
 // The worker owns OPFS. This module is the only place that speaks the worker protocol.
 
 import { updateProgress } from './progress';
-import { mediaDownloadsStorage } from '@extension/storage';
+import { mediaDownloadsStorage, mediaSettingsStorage } from '@extension/storage';
 import type {
   FetchRangesRequest,
   FetchSegmentsRequest,
@@ -180,6 +180,15 @@ const findResumeChunks = async (
   }
 };
 
+const readMaxConnections = async (): Promise<number> => {
+  try {
+    const s = await mediaSettingsStorage.get();
+    return Math.max(1, Math.min(16, Math.floor(s.downloadConnectionsPerFile ?? 8)));
+  } catch {
+    return 8;
+  }
+};
+
 const fetchRangesToOpfs = (args: {
   jobKey: string;
   opfsName: string;
@@ -194,10 +203,12 @@ const fetchRangesToOpfs = (args: {
       resolve: totalBytes => resolve({ opfsName: args.opfsName, totalBytes }),
       reject,
     });
-    void findResumeChunks(args.jobKey, args.ranges, args.totalBytes).then(resumeChunks => {
-      const req: FetchRangesRequest = { type: 'fetch-ranges', jobId, ...args, resumeChunks };
-      send(req);
-    });
+    void Promise.all([findResumeChunks(args.jobKey, args.ranges, args.totalBytes), readMaxConnections()]).then(
+      ([resumeChunks, maxConnections]) => {
+        const req: FetchRangesRequest = { type: 'fetch-ranges', jobId, ...args, resumeChunks, maxConnections };
+        send(req);
+      },
+    );
   });
 
 const fetchUrlToOpfs = (args: {

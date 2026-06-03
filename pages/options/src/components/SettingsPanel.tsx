@@ -219,6 +219,57 @@ export const SettingsPanel = ({ isLight }: { isLight: boolean }) => {
 
         <div className={divider} />
 
+        {/* Connections per file */}
+        <div className="flex items-center justify-between px-5 py-4">
+          <div className="flex items-center gap-3">
+            <div
+              className={cn(
+                'flex h-9 w-9 items-center justify-center rounded-xl',
+                isLight ? 'bg-sky-100 text-sky-600' : 'bg-sky-500/10 text-sky-400',
+              )}>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round">
+                <path d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </div>
+            <div>
+              <p className={cn('text-sm font-medium', label)}>Connections per file</p>
+              <p className={cn('text-xs', sub)}>
+                Parallel HTTP Range connections used for a single download. Higher = faster on capable CDNs
+              </p>
+            </div>
+          </div>
+          <select
+            value={settings?.downloadConnectionsPerFile ?? 8}
+            onChange={e =>
+              mediaSettingsStorage.set(prev => ({ ...prev, downloadConnectionsPerFile: Number(e.target.value) }))
+            }
+            className={cn(
+              'rounded-lg border px-3 py-1.5 text-sm font-medium outline-none transition',
+              isLight
+                ? 'border-gray-200 bg-gray-50 text-gray-700 hover:border-gray-300'
+                : 'border-white/[0.08] bg-white/[0.04] text-gray-300 hover:border-white/[0.15]',
+            )}>
+            <option value={1}>1</option>
+            <option value={2}>2</option>
+            <option value={4}>4</option>
+            <option value={6}>6</option>
+            <option value={8}>8</option>
+            <option value={12}>12</option>
+            <option value={16}>16</option>
+          </select>
+        </div>
+
+        <div className={divider} />
+
         {/* History limit */}
         <div className="flex items-center justify-between px-5 py-4">
           <div className="flex items-center gap-3">
