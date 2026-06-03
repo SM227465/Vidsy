@@ -546,7 +546,23 @@ export const DownloadDetailsView = ({ downloads, isLight }: Props) => {
                             </tr>
                           </thead>
                           <tbody>
-                            {activeRows.map(c => {
+                            {/* Pad to a stable minimum of 8 rows during active downloads so
+                                the table doesn't shrink-then-grow as one chunk completes
+                                and the next one starts fetching a moment later — that brief
+                                gap was making the accordion height visibly jitter. Empty
+                                slots render as low-opacity '—' placeholders. */}
+                            {Array.from({ length: Math.max(8, activeRows.length) }, (_, i) => {
+                              const c = activeRows[i];
+                              if (!c) {
+                                return (
+                                  <tr key={`slot-${i}`} style={{ opacity: 0.3 }}>
+                                    <td className={`py-0.5 ${muted}`}>—</td>
+                                    <td className={`py-0.5 text-right font-mono ${muted}`}>—</td>
+                                    <td className={`py-0.5 text-right font-mono ${muted}`}>—</td>
+                                    <td className={`py-0.5 text-right ${muted}`}>idle</td>
+                                  </tr>
+                                );
+                              }
                               const chunkSize = c.end - c.start + 1;
                               return (
                                 <tr key={c.i}>
