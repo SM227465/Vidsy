@@ -1,7 +1,7 @@
 {
   "extensionDescription": {
     "description": "Extension description",
-    "message": "Detect and download videos and audio from web pages. Supports HLS, DASH, and direct download streams."
+    "message": "Detect and download videos and audio from web pages. Multi-connection HTTP, HLS, DASH, and optional browser download interception."
   },
   "extensionName": {
     "description": "Extension name",
