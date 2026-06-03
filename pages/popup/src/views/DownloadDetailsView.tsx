@@ -156,6 +156,26 @@ export const DownloadDetailsView = ({ downloads, isLight }: Props) => {
     if (!entry) return;
     void chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.CANCEL, payload: { url: entry.key, intent: 'cancel' } });
   };
+  // Resume / Retry sends the same DOWNLOAD message the browser-action popup's
+  // onRetry sends — a full restart from byte 0, not a true byte-level resume.
+  // (Real byte-level resume is a separate task: needs OPFS state persistence +
+  // chunk-completion tracking + Range continuation from first incomplete chunk.)
+  const onResume = () => {
+    if (!entry?.item) return;
+    void chrome.runtime.sendMessage({
+      type: MEDIA_MESSAGE.DOWNLOAD,
+      payload: {
+        url: entry.item.url,
+        key: entry.item.url,
+        kind: entry.item.kind,
+        fileName: entry.item.fileName,
+        title: entry.item.title,
+        outputFormat: entry.outputFormat,
+        item: entry.item,
+      },
+    });
+  };
+  const onCloseWindow = () => window.close();
 
   const bg = isLight ? 'bg-white' : 'bg-[#0f1117]';
   const text = isLight ? 'text-gray-900' : 'text-gray-100';
@@ -521,6 +541,27 @@ export const DownloadDetailsView = ({ downloads, isLight }: Props) => {
                 isLight ? 'bg-red-100 text-red-700 hover:bg-red-200' : 'bg-red-500/15 text-red-400 hover:bg-red-500/25'
               }`}>
               Cancel
+            </button>
+          </div>
+        ) : (entry.stage === 'paused' || entry.stage === 'failed' || entry.stage === 'cancelled') && entry.item ? (
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={onResume}
+              className={`min-w-[100px] rounded-md px-4 py-2 text-[12px] font-semibold transition ${
+                isLight
+                  ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                  : 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25'
+              }`}>
+              {entry.stage === 'paused' ? 'Resume' : 'Retry'}
+            </button>
+            <button
+              onClick={onCloseWindow}
+              className={`min-w-[100px] rounded-md px-4 py-2 text-[12px] font-semibold transition ${
+                isLight
+                  ? 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  : 'bg-white/[0.06] text-gray-300 hover:bg-white/[0.1]'
+              }`}>
+              Close
             </button>
           </div>
         ) : (
