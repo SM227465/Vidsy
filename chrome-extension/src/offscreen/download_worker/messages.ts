@@ -41,6 +41,11 @@ export type FetchRangesRequest = {
   ranges: { start: number; end: number }[];
   totalBytes: number;
   stage: 'download-video' | 'download-audio';
+  // Prior chunk states from a paused or interrupted run of this same key.
+  // The worker uses these to skip dispatching chunks that already completed
+  // (their bytes are already at the right offset in OPFS), so resume picks
+  // up from the first incomplete chunk instead of restarting from byte 0.
+  resumeChunks?: ChunkProgress[];
 };
 
 export type GetFileRequest = {

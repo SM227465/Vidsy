@@ -90,24 +90,30 @@ const parallelFetchToOpfs = async (args: {
   signal: AbortSignal;
   totalEstimatedBytes?: number;
   chunkMeta?: Array<{ start: number; end: number }>;
+  resumeChunks?: ChunkProgress[];
 }): Promise<void> => {
-  const { opfsName, count, fetchOne, stage, jobKey, signal, totalEstimatedBytes, chunkMeta } = args;
+  const { opfsName, count, fetchOne, stage, jobKey, signal, totalEstimatedBytes, chunkMeta, resumeChunks } = args;
 
   const pending = new Map<number, Uint8Array>();
   let nextToWrite = 0;
-  let completedCount = 0;
   let inFlight = 0;
   let cursor = 0;
   let finishedDispatching = false;
   const errors: Error[] = [];
 
-  const chunkStates: ChunkProgress[] | undefined = chunkMeta?.map((m, i) => ({
-    i,
-    start: m.start,
-    end: m.end,
-    downloaded: 0,
-    status: 'pending' as const,
-  }));
+  // Build chunk states, hydrating any chunks that already completed in a
+  // prior run from `resumeChunks` so we can skip them. For range downloads
+  // the OPFS file persists across pauses and each completed chunk has
+  // already been written at its byte position, so 'done' here means
+  // "no fetch or write needed for this chunk on resume".
+  const chunkStates: ChunkProgress[] | undefined = chunkMeta?.map((m, i) => {
+    const prior = resumeChunks?.find(c => c.i === i && c.start === m.start && c.end === m.end);
+    if (prior?.status === 'done') {
+      return { i, start: m.start, end: m.end, downloaded: m.end - m.start + 1, status: 'done' as const };
+    }
+    return { i, start: m.start, end: m.end, downloaded: 0, status: 'pending' as const };
+  });
+  let completedCount = chunkStates?.filter(c => c.status === 'done').length ?? 0;
 
   const flushInOrder = (): void => {
     while (pending.has(nextToWrite)) {
@@ -119,16 +125,28 @@ const parallelFetchToOpfs = async (args: {
   };
 
   const dispatchOne = async (index: number): Promise<void> => {
+    // Skip chunks the resume hydration already marked done — their bytes are
+    // already in OPFS from a previous run.
+    if (chunkStates && chunkStates[index] && chunkStates[index].status === 'done') return;
     if (chunkStates && chunkStates[index]) chunkStates[index].status = 'fetching';
     const onBytes = (downloaded: number): void => {
       if (chunkStates && chunkStates[index]) chunkStates[index].downloaded = downloaded;
     };
     try {
       const data = await fetchOne(index, signal, onBytes);
-      pending.set(index, new Uint8Array(data));
+      if (chunkMeta) {
+        // Range download: write each chunk directly at its byte offset so
+        // chunks can complete out of order without head-of-line blocking,
+        // and the OPFS file is correctly laid out even if a pause/resume
+        // happened mid-flight.
+        opfs.writeAt(opfsName, chunkMeta[index].start, new Uint8Array(data));
+      } else {
+        // Segment download: must append in sequential order.
+        pending.set(index, new Uint8Array(data));
+        flushInOrder();
+      }
       completedCount++;
       if (chunkStates && chunkStates[index]) chunkStates[index].status = 'done';
-      flushInOrder();
       // For Range downloads (chunkStates present) we report the sum of bytes
       // across all chunks that have completed fetching, not opfs.size(). The
       // two diverge when a low-indexed chunk is slow — its peers complete
@@ -271,6 +289,13 @@ const handleFetchRanges = async (req: FetchRangesRequest): Promise<void> => {
   try {
     await opfs.open(opfsName);
 
+    // If the offscreen-doc GC purged the OPFS file between runs (or this is a
+    // fresh download with the same key as something canceled long ago), the
+    // chunks-done state in mediaDownloadsStorage is stale and trusting it
+    // would produce a corrupt output. Discard resume state when the file is
+    // empty so we start fresh.
+    const resumeChunks = opfs.size(opfsName) === 0 ? undefined : req.resumeChunks;
+
     const fetchOne = (i: number, signal: AbortSignal, onBytes?: (downloaded: number) => void): Promise<ArrayBuffer> => {
       const { start, end } = ranges[i];
       return fetchWithRetry(url, signal, { Range: `bytes=${start}-${end}` }, MAX_RETRIES, onBytes);
@@ -285,15 +310,22 @@ const handleFetchRanges = async (req: FetchRangesRequest): Promise<void> => {
       signal: controller.signal,
       totalEstimatedBytes: knownTotal,
       chunkMeta: ranges,
+      resumeChunks,
     });
 
     await opfs.close(opfsName);
     post({ type: 'fetch-done', jobId, opfsName, totalBytes: opfs.size(opfsName) });
   } catch (err) {
-    try {
-      await opfs.remove(opfsName);
-    } catch {
-      /* ignore */
+    const isAbort = err instanceof DOMException && err.name === 'AbortError';
+    // Pause = abort. Keep the OPFS file so the next start can resume from
+    // the chunks already on disk. Real failure = remove the partial file
+    // (otherwise corrupted bytes would leak into future resume attempts).
+    if (!isAbort) {
+      try {
+        await opfs.remove(opfsName);
+      } catch {
+        /* ignore */
+      }
     }
     post({ type: 'error', jobId, error: err instanceof Error ? err.message : String(err) });
   } finally {

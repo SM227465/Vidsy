@@ -72,8 +72,12 @@ const computeRanges = (totalBytes: number): { start: number; end: number }[] => 
   return ranges;
 };
 
+// Deterministic OPFS filename per (key, tag, ext) so a paused download can be
+// resumed: the next attempt opens the SAME file that holds the bytes already
+// fetched. Across browser sessions the offscreen-doc startup GC purges the
+// file regardless, but in-session pause / resume works.
 const opfsNameFor = (key: string, tag: string, ext: string): string =>
-  `http-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}-${tag}-${Date.now().toString(36)}.${ext}`;
+  `http-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}-${tag}.${ext}`;
 
 const mp3TranscodeArgs = (input: string, output: string): string[] => [
   '-i',

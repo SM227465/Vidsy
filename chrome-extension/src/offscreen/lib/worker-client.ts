@@ -2,6 +2,7 @@
 // The worker owns OPFS. This module is the only place that speaks the worker protocol.
 
 import { updateProgress } from './progress';
+import { mediaDownloadsStorage } from '@extension/storage';
 import type {
   FetchRangesRequest,
   FetchSegmentsRequest,
@@ -12,6 +13,7 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from '../download_worker/messages';
+import type { ChunkProgress } from '@extension/shared';
 
 let worker: Worker | null = null;
 let jobCounter = 0;
@@ -131,7 +133,7 @@ const send = (req: WorkerRequest): void => {
   getWorker().postMessage(req);
 };
 
-export const fetchSegmentsToOpfs = (args: {
+const fetchSegmentsToOpfs = (args: {
   jobKey: string;
   opfsName: string;
   segments: SegmentSpec[];
@@ -149,7 +151,36 @@ export const fetchSegmentsToOpfs = (args: {
     send(req);
   });
 
-export const fetchRangesToOpfs = (args: {
+// Look up any prior chunk state for this jobKey so the worker can skip
+// chunks that already completed in a paused / interrupted previous run.
+// We only resume if the ranges match (same file, same chunking strategy);
+// otherwise the OPFS bytes would belong to a different layout.
+const findResumeChunks = async (
+  jobKey: string,
+  ranges: { start: number; end: number }[],
+  totalBytes: number,
+): Promise<ChunkProgress[] | undefined> => {
+  try {
+    const all = await mediaDownloadsStorage.get();
+    const prior = all[jobKey];
+    if (!prior?.chunks?.length) return undefined;
+    if (prior.estimatedBytes !== totalBytes) return undefined;
+    if (prior.chunks.length !== ranges.length) return undefined;
+    // Reject if ANY range boundary disagrees with the prior state — chunking
+    // is deterministic for a given totalBytes but defense in depth.
+    for (let i = 0; i < ranges.length; i++) {
+      const r = ranges[i];
+      const p = prior.chunks[i];
+      if (!p || p.i !== i || p.start !== r.start || p.end !== r.end) return undefined;
+    }
+    const done = prior.chunks.filter(c => c.status === 'done');
+    return done.length > 0 ? done : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const fetchRangesToOpfs = (args: {
   jobKey: string;
   opfsName: string;
   url: string;
@@ -163,11 +194,13 @@ export const fetchRangesToOpfs = (args: {
       resolve: totalBytes => resolve({ opfsName: args.opfsName, totalBytes }),
       reject,
     });
-    const req: FetchRangesRequest = { type: 'fetch-ranges', jobId, ...args };
-    send(req);
+    void findResumeChunks(args.jobKey, args.ranges, args.totalBytes).then(resumeChunks => {
+      const req: FetchRangesRequest = { type: 'fetch-ranges', jobId, ...args, resumeChunks };
+      send(req);
+    });
   });
 
-export const fetchUrlToOpfs = (args: {
+const fetchUrlToOpfs = (args: {
   jobKey: string;
   opfsName: string;
   url: string;
@@ -183,14 +216,14 @@ export const fetchUrlToOpfs = (args: {
     send(req);
   });
 
-export const getOpfsFile = (opfsName: string): Promise<File> =>
+const getOpfsFile = (opfsName: string): Promise<File> =>
   new Promise((resolve, reject) => {
     const jobId = nextJobId();
     pendingFile.set(jobId, { resolve, reject });
     send({ type: 'get-file', jobId, opfsName });
   });
 
-export const writeBytesToOpfs = (opfsName: string, bytes: ArrayBuffer): Promise<File> =>
+const writeBytesToOpfs = (opfsName: string, bytes: ArrayBuffer): Promise<File> =>
   new Promise((resolve, reject) => {
     const jobId = nextJobId();
     pendingFile.set(jobId, { resolve, reject });
@@ -198,18 +231,18 @@ export const writeBytesToOpfs = (opfsName: string, bytes: ArrayBuffer): Promise<
     getWorker().postMessage({ type: 'write-bytes', jobId, opfsName, bytes }, [bytes]);
   });
 
-export const removeOpfs = (opfsName: string): Promise<void> =>
+const removeOpfs = (opfsName: string): Promise<void> =>
   new Promise((resolve, reject) => {
     const jobId = nextJobId();
     pendingAck.set(jobId, { resolve, reject });
     send({ type: 'remove', jobId, opfsName });
   });
 
-export const cancelWorkerJob = (jobKey: string): void => {
+const cancelWorkerJob = (jobKey: string): void => {
   send({ type: 'cancel', jobKey });
 };
 
-export const muxInWorker = (args: {
+const muxInWorker = (args: {
   jobKey: string;
   outputOpfsName: string;
   ffmpegArgs: string[];
@@ -231,3 +264,14 @@ export const muxInWorker = (args: {
     };
     send(req);
   });
+
+export {
+  fetchSegmentsToOpfs,
+  fetchRangesToOpfs,
+  fetchUrlToOpfs,
+  getOpfsFile,
+  writeBytesToOpfs,
+  removeOpfs,
+  cancelWorkerJob,
+  muxInWorker,
+};
