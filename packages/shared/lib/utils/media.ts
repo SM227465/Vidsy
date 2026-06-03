@@ -73,6 +73,22 @@ export type MediaDownloadStage =
   | 'cancelled'
   | 'paused';
 
+// Per-connection chunk progress for HTTP Range parallel downloads. Reported by
+// the worker so the details window can render a multi-band position bar and
+// table similar to the connections breakdown in dedicated download managers.
+// Only populated for HTTP-range downloads; HLS/DASH segment fetches leave it
+// unset since the visualization doesn't translate to many small segments.
+export type ChunkProgress = {
+  i: number; // 0-based chunk index
+  start: number; // inclusive byte offset in the destination file
+  end: number; // inclusive byte offset in the destination file
+  // Bytes downloaded so far for this chunk — updated live as the HTTP body
+  // streams in, so the UI can render per-connection throughput / fill state.
+  // For status === 'done' this equals (end - start + 1); for 'pending' it is 0.
+  downloaded: number;
+  status: 'pending' | 'fetching' | 'done' | 'error';
+};
+
 export type MediaDownloadProgress = {
   key: string; // typically url
   stage: MediaDownloadStage;
@@ -86,6 +102,7 @@ export type MediaDownloadProgress = {
   startedAt?: number;
   updatedAt?: number;
   queuePosition?: number; // 1-based, shown when stage === 'queued'
+  chunks?: ChunkProgress[]; // per-connection breakdown (HTTP range only)
 };
 
 export type MediaDownloadState = Record<string, MediaDownloadProgress>;
@@ -126,6 +143,10 @@ export const MEDIA_MESSAGE = {
   PICKER_ACTIVATE: 'picker/activate',
   PICKER_PICKED: 'picker/picked',
   QUEUE_REORDER: 'media/queue-reorder',
+  INTERCEPT_SHOW: 'media/intercept-show',
+  INTERCEPT_DOWNLOAD_VIDSY: 'media/intercept-download-vidsy',
+  INTERCEPT_RESUME_BROWSER: 'media/intercept-resume-browser',
+  INTERCEPT_DISMISS: 'media/intercept-dismiss',
 } as const;
 
 export type MediaMessage =
@@ -159,6 +180,19 @@ export type MediaMessage =
   | { type: typeof MEDIA_MESSAGE.PICKER_START; payload?: { tabId?: number } }
   | { type: typeof MEDIA_MESSAGE.PICKER_ACTIVATE }
   | { type: typeof MEDIA_MESSAGE.PICKER_PICKED; payload: { url: string } }
-  | { type: typeof MEDIA_MESSAGE.QUEUE_REORDER; payload: { key: string; direction: 'up' | 'down' } };
+  | { type: typeof MEDIA_MESSAGE.QUEUE_REORDER; payload: { key: string; direction: 'up' | 'down' } }
+  | {
+      type: typeof MEDIA_MESSAGE.INTERCEPT_SHOW;
+      payload: {
+        url: string;
+        fileName?: string;
+        mime?: string;
+        fileSize?: number;
+        referrer?: string;
+      };
+    }
+  | { type: typeof MEDIA_MESSAGE.INTERCEPT_DOWNLOAD_VIDSY; payload: { url: string; fileName?: string } }
+  | { type: typeof MEDIA_MESSAGE.INTERCEPT_RESUME_BROWSER; payload: { url: string; fileName?: string } }
+  | { type: typeof MEDIA_MESSAGE.INTERCEPT_DISMISS; payload: { url: string } };
 
 export type PasteUrlResult = { ok: true; kind: MediaKind } | { ok: false; error: string };

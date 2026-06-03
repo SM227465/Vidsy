@@ -15,8 +15,9 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from './messages';
+import type { ChunkProgress } from '@extension/shared';
 
-const MAX_CONCURRENT = 6;
+const MAX_CONCURRENT = 8;
 const MAX_RETRIES = 3;
 const SEGMENT_TIMEOUT_MS = 30_000;
 
@@ -31,6 +32,7 @@ const fetchWithRetry = async (
   signal: AbortSignal,
   extraHeaders?: Record<string, string>,
   retries = MAX_RETRIES,
+  onBytes?: (downloadedSoFar: number) => void,
 ): Promise<ArrayBuffer> => {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
@@ -38,7 +40,31 @@ const fetchWithRetry = async (
       const combined = AbortSignal.any([signal, timeoutSignal]);
       const res = await fetch(url, { signal: combined, credentials: 'include', headers: extraHeaders });
       if (!res.ok && res.status !== 206) throw new Error(`HTTP ${res.status}`);
-      return await res.arrayBuffer();
+      // Fast path: no per-byte progress wanted — let fetch buffer the body
+      // (slightly more efficient than streaming + concatenating manually).
+      if (!onBytes) return await res.arrayBuffer();
+      // Streaming path: read the body in chunks so the worker can report
+      // bytes-per-connection live. Used by the HTTP range download path so
+      // the standalone window can show "Fetching · 3.2/8 MB" per chunk.
+      if (!res.body) return await res.arrayBuffer();
+      const reader = res.body.getReader();
+      const parts: Uint8Array[] = [];
+      let total = 0;
+      onBytes(0); // signal "starting" so a retry resets a prior partial count
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+        total += value.byteLength;
+        onBytes(total);
+      }
+      const out = new Uint8Array(total);
+      let offset = 0;
+      for (const p of parts) {
+        out.set(p, offset);
+        offset += p.byteLength;
+      }
+      return out.buffer;
     } catch (err) {
       if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
       if (attempt === retries - 1) throw err;
@@ -51,24 +77,48 @@ const fetchWithRetry = async (
 // Fetch `count` items in parallel (bounded by MAX_CONCURRENT), append their
 // buffers to OPFS in strict index order, and report progress along the way.
 // Used by both segment and range download paths.
+//
+// When `chunkMeta` is supplied (HTTP-range case), per-chunk progress is
+// included on each `progress` message so the standalone download window can
+// render a multi-band position bar plus a connections table.
 const parallelFetchToOpfs = async (args: {
   opfsName: string;
   count: number;
-  fetchOne: (i: number, signal: AbortSignal) => Promise<ArrayBuffer>;
+  fetchOne: (i: number, signal: AbortSignal, onBytes?: (downloaded: number) => void) => Promise<ArrayBuffer>;
   stage: 'download-video' | 'download-audio';
   jobKey: string;
   signal: AbortSignal;
   totalEstimatedBytes?: number;
+  chunkMeta?: Array<{ start: number; end: number }>;
+  resumeChunks?: ChunkProgress[];
+  maxConcurrent?: number;
 }): Promise<void> => {
-  const { opfsName, count, fetchOne, stage, jobKey, signal, totalEstimatedBytes } = args;
+  const { opfsName, count, fetchOne, stage, jobKey, signal, totalEstimatedBytes, chunkMeta, resumeChunks } = args;
+  // Effective concurrency: caller-provided (range downloads with a setting),
+  // else worker default. Clamped to a safe band so a corrupted setting
+  // can't DoS the server or starve the dispatcher.
+  const maxConcurrent = Math.max(1, Math.min(16, args.maxConcurrent ?? MAX_CONCURRENT));
 
   const pending = new Map<number, Uint8Array>();
   let nextToWrite = 0;
-  let completedCount = 0;
   let inFlight = 0;
   let cursor = 0;
   let finishedDispatching = false;
   const errors: Error[] = [];
+
+  // Build chunk states, hydrating any chunks that already completed in a
+  // prior run from `resumeChunks` so we can skip them. For range downloads
+  // the OPFS file persists across pauses and each completed chunk has
+  // already been written at its byte position, so 'done' here means
+  // "no fetch or write needed for this chunk on resume".
+  const chunkStates: ChunkProgress[] | undefined = chunkMeta?.map((m, i) => {
+    const prior = resumeChunks?.find(c => c.i === i && c.start === m.start && c.end === m.end);
+    if (prior?.status === 'done') {
+      return { i, start: m.start, end: m.end, downloaded: m.end - m.start + 1, status: 'done' as const };
+    }
+    return { i, start: m.start, end: m.end, downloaded: 0, status: 'pending' as const };
+  });
+  let completedCount = chunkStates?.filter(c => c.status === 'done').length ?? 0;
 
   const flushInOrder = (): void => {
     while (pending.has(nextToWrite)) {
@@ -80,46 +130,114 @@ const parallelFetchToOpfs = async (args: {
   };
 
   const dispatchOne = async (index: number): Promise<void> => {
+    // Skip chunks the resume hydration already marked done — their bytes are
+    // already in OPFS from a previous run.
+    if (chunkStates && chunkStates[index] && chunkStates[index].status === 'done') return;
+    if (chunkStates && chunkStates[index]) chunkStates[index].status = 'fetching';
+    const onBytes = (downloaded: number): void => {
+      if (chunkStates && chunkStates[index]) chunkStates[index].downloaded = downloaded;
+    };
     try {
-      const data = await fetchOne(index, signal);
-      pending.set(index, new Uint8Array(data));
+      const data = await fetchOne(index, signal, onBytes);
+      if (chunkMeta) {
+        // Range download: write each chunk directly at its byte offset so
+        // chunks can complete out of order without head-of-line blocking,
+        // and the OPFS file is correctly laid out even if a pause/resume
+        // happened mid-flight.
+        opfs.writeAt(opfsName, chunkMeta[index].start, new Uint8Array(data));
+      } else {
+        // Segment download: must append in sequential order.
+        pending.set(index, new Uint8Array(data));
+        flushInOrder();
+      }
       completedCount++;
-      flushInOrder();
-      const written = opfs.size(opfsName);
+      if (chunkStates && chunkStates[index]) chunkStates[index].status = 'done';
+      // For Range downloads (chunkStates present) we report the sum of bytes
+      // across all chunks that have completed fetching, not opfs.size(). The
+      // two diverge when a low-indexed chunk is slow — its peers complete
+      // and sit in memory waiting for the in-order flush, so opfs.size lags
+      // by hundreds of MB. The chunk sum reflects real throughput and keeps
+      // speed / ETA / status honest. Other paths still use the write cursor.
+      const fetchedBytes = chunkStates
+        ? chunkStates.reduce((sum, c) => {
+            if (c.status === 'done') return sum + (c.end - c.start + 1);
+            if (c.status === 'fetching') return sum + c.downloaded;
+            return sum;
+          }, 0)
+        : opfs.size(opfsName);
       const estimatedBytes =
-        totalEstimatedBytes ?? (completedCount > 0 ? Math.round((written / completedCount) * count) : undefined);
-      post({ type: 'progress', jobKey, stage, downloadedBytes: written, estimatedBytes });
+        totalEstimatedBytes ?? (completedCount > 0 ? Math.round((fetchedBytes / completedCount) * count) : undefined);
+      post({
+        type: 'progress',
+        jobKey,
+        stage,
+        downloadedBytes: fetchedBytes,
+        estimatedBytes,
+        chunks: chunkStates ? chunkStates.map(c => ({ ...c })) : undefined,
+      });
     } catch (err) {
+      if (chunkStates && chunkStates[index]) chunkStates[index].status = 'error';
       errors.push(err instanceof Error ? err : new Error(String(err)));
     }
   };
 
-  await new Promise<void>(resolve => {
-    const tick = (): void => {
-      if (signal.aborted || errors.length > 0) {
-        if (inFlight === 0) resolve();
-        return;
-      }
-      while (inFlight < MAX_CONCURRENT && cursor < count) {
-        const i = cursor++;
-        inFlight++;
-        dispatchOne(i).finally(() => {
-          inFlight--;
-          if (finishedDispatching && inFlight === 0) resolve();
-          else tick();
-        });
-      }
-      if (cursor >= count) {
-        finishedDispatching = true;
-        if (inFlight === 0) resolve();
-      }
-    };
-    tick();
-  });
+  // Periodic snapshot tick — keeps the UI's stats panel live even when no
+  // chunk has completed in the last few hundred ms (slow links, big chunks).
+  // The dispatchOne post fires on chunk completion; this fires on a 500ms
+  // wall-clock cadence with the latest accumulated byte count + chunk states.
+  const postSnapshot = (): void => {
+    const fetchedBytes = chunkStates
+      ? chunkStates.reduce((sum, c) => {
+          if (c.status === 'done') return sum + (c.end - c.start + 1);
+          if (c.status === 'fetching') return sum + c.downloaded;
+          return sum;
+        }, 0)
+      : opfs.size(opfsName);
+    const estBytes =
+      totalEstimatedBytes ?? (completedCount > 0 ? Math.round((fetchedBytes / completedCount) * count) : undefined);
+    post({
+      type: 'progress',
+      jobKey,
+      stage,
+      downloadedBytes: fetchedBytes,
+      estimatedBytes: estBytes,
+      chunks: chunkStates ? chunkStates.map(c => ({ ...c })) : undefined,
+    });
+  };
+  const snapshotHandle: ReturnType<typeof setInterval> = setInterval(postSnapshot, 500);
+
+  try {
+    await new Promise<void>(resolve => {
+      const tick = (): void => {
+        if (signal.aborted || errors.length > 0) {
+          if (inFlight === 0) resolve();
+          return;
+        }
+        while (inFlight < maxConcurrent && cursor < count) {
+          const i = cursor++;
+          inFlight++;
+          dispatchOne(i).finally(() => {
+            inFlight--;
+            if (finishedDispatching && inFlight === 0) resolve();
+            else tick();
+          });
+        }
+        if (cursor >= count) {
+          finishedDispatching = true;
+          if (inFlight === 0) resolve();
+        }
+      };
+      tick();
+    });
+  } finally {
+    clearInterval(snapshotHandle);
+  }
 
   if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
   if (errors.length > 0) throw new Error(`Failed ${errors.length} parts: ${errors[0].message}`);
   flushInOrder();
+  // One final snapshot so the UI sees the post-flush state immediately.
+  postSnapshot();
 };
 
 const handleFetchSegments = async (req: FetchSegmentsRequest): Promise<void> => {
@@ -176,9 +294,16 @@ const handleFetchRanges = async (req: FetchRangesRequest): Promise<void> => {
   try {
     await opfs.open(opfsName);
 
-    const fetchOne = (i: number, signal: AbortSignal): Promise<ArrayBuffer> => {
+    // If the offscreen-doc GC purged the OPFS file between runs (or this is a
+    // fresh download with the same key as something canceled long ago), the
+    // chunks-done state in mediaDownloadsStorage is stale and trusting it
+    // would produce a corrupt output. Discard resume state when the file is
+    // empty so we start fresh.
+    const resumeChunks = opfs.size(opfsName) === 0 ? undefined : req.resumeChunks;
+
+    const fetchOne = (i: number, signal: AbortSignal, onBytes?: (downloaded: number) => void): Promise<ArrayBuffer> => {
       const { start, end } = ranges[i];
-      return fetchWithRetry(url, signal, { Range: `bytes=${start}-${end}` });
+      return fetchWithRetry(url, signal, { Range: `bytes=${start}-${end}` }, MAX_RETRIES, onBytes);
     };
 
     await parallelFetchToOpfs({
@@ -189,15 +314,24 @@ const handleFetchRanges = async (req: FetchRangesRequest): Promise<void> => {
       jobKey,
       signal: controller.signal,
       totalEstimatedBytes: knownTotal,
+      chunkMeta: ranges,
+      resumeChunks,
+      maxConcurrent: req.maxConnections,
     });
 
     await opfs.close(opfsName);
     post({ type: 'fetch-done', jobId, opfsName, totalBytes: opfs.size(opfsName) });
   } catch (err) {
-    try {
-      await opfs.remove(opfsName);
-    } catch {
-      /* ignore */
+    const isAbort = err instanceof DOMException && err.name === 'AbortError';
+    // Pause = abort. Keep the OPFS file so the next start can resume from
+    // the chunks already on disk. Real failure = remove the partial file
+    // (otherwise corrupted bytes would leak into future resume attempts).
+    if (!isAbort) {
+      try {
+        await opfs.remove(opfsName);
+      } catch {
+        /* ignore */
+      }
     }
     post({ type: 'error', jobId, error: err instanceof Error ? err.message : String(err) });
   } finally {
@@ -247,27 +381,45 @@ const handleMux = async (req: MuxRequest): Promise<void> => {
       muxPercent: undefined,
     });
 
+    // MP3 transcode has output_size << input_size, so any size-ratio estimate
+    // is misleading there — keep the indeterminate "Processing…" for MP3.
+    // Stream-copy mux (.mp4 etc.) produces output ≈ input, so OPFS file size
+    // is a reliable proxy.
+    const isMp3Transcode = outputOpfsName.endsWith('.mp3');
+
     pollHandle = setInterval(() => {
       (async () => {
         try {
           if (!libav) return;
-          // These two methods are an extension some libav.js builds carry but
-          // the vendored h264-aac-mp3 build doesn't expose. When missing we
-          // skip the per-tick muxPercent update — the mux still runs to
-          // completion, the UI just lacks fine-grained progress.
+          // libav.ffmpeg_get_out_time_ms / get_total_size_bytes are an
+          // extension some libav.js builds carry; the vendored h264-aac-mp3
+          // build doesn't expose them. We try those first, then fall back to
+          // the OPFS output file size (which the custom output device writes
+          // to as the mux runs) for stream-copy.
           const getOutTime = libav.ffmpeg_get_out_time_ms as (() => Promise<number>) | undefined;
           const getTotalBytes = libav.ffmpeg_get_total_size_bytes as (() => Promise<number>) | undefined;
-          if (typeof getOutTime !== 'function' || typeof getTotalBytes !== 'function') return;
-          const outTimeMs = await getOutTime.call(libav);
-          const totalBytes = await getTotalBytes.call(libav);
+          const hasLibavProgress = typeof getOutTime === 'function' && typeof getTotalBytes === 'function';
+
+          let outTimeMs = 0;
+          let totalBytes = 0;
+          if (hasLibavProgress) {
+            outTimeMs = await getOutTime!.call(libav);
+            totalBytes = await getTotalBytes!.call(libav);
+          } else {
+            totalBytes = opfs.size(outputOpfsName);
+          }
+
           let muxPercent: number | undefined;
           if (durationSeconds && durationSeconds > 0 && outTimeMs > 0) {
             muxPercent = Math.min(99, Math.round((outTimeMs / 1000 / durationSeconds) * 100));
-          } else if (estimatedBytes && estimatedBytes > 0 && totalBytes > 0) {
-            // Stream-copy MP4: output size ≈ input size. For MP3 transcode the
-            // ratio is off but still monotonic — better than showing nothing.
+          } else if (!isMp3Transcode && estimatedBytes && estimatedBytes > 0 && totalBytes > 0) {
             muxPercent = Math.min(99, Math.round((totalBytes / estimatedBytes) * 100));
           }
+
+          // Skip the post if we have nothing useful to report (avoid spamming
+          // the storage with 0/undefined updates that overwrite a prior value).
+          if (muxPercent === undefined && totalBytes === 0) return;
+
           post({
             type: 'progress',
             jobKey,

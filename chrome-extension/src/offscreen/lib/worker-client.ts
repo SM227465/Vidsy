@@ -12,6 +12,13 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from '../download_worker/messages';
+import type { ChunkProgress } from '@extension/shared';
+
+// Storage is dynamically imported so its module-level createStorage calls
+// (which can throw in some offscreen contexts when chrome.storage is being
+// looked up by bracket access against a session storage area) can't break
+// the entire offscreen module's load. The actual resume / connection-count
+// reads run on first download, well after module init.
 
 let worker: Worker | null = null;
 let jobCounter = 0;
@@ -56,8 +63,8 @@ const ensureListener = (() => {
       const msg = ev.data;
       switch (msg.type) {
         case 'progress': {
-          const { jobKey, stage, downloadedBytes, estimatedBytes, muxPercent } = msg as ProgressUpdate;
-          void updateProgress(jobKey, { stage, downloadedBytes, estimatedBytes, muxPercent });
+          const { jobKey, stage, downloadedBytes, estimatedBytes, muxPercent, chunks } = msg as ProgressUpdate;
+          void updateProgress(jobKey, { stage, downloadedBytes, estimatedBytes, muxPercent, chunks });
           return;
         }
         case 'fetch-done': {
@@ -131,7 +138,7 @@ const send = (req: WorkerRequest): void => {
   getWorker().postMessage(req);
 };
 
-export const fetchSegmentsToOpfs = (args: {
+const fetchSegmentsToOpfs = (args: {
   jobKey: string;
   opfsName: string;
   segments: SegmentSpec[];
@@ -149,7 +156,47 @@ export const fetchSegmentsToOpfs = (args: {
     send(req);
   });
 
-export const fetchRangesToOpfs = (args: {
+// Look up any prior chunk state for this jobKey so the worker can skip
+// chunks that already completed in a paused / interrupted previous run.
+// We only resume if the ranges match (same file, same chunking strategy);
+// otherwise the OPFS bytes would belong to a different layout.
+const findResumeChunks = async (
+  jobKey: string,
+  ranges: { start: number; end: number }[],
+  totalBytes: number,
+): Promise<ChunkProgress[] | undefined> => {
+  try {
+    const { mediaDownloadsStorage } = await import('@extension/storage');
+    const all = await mediaDownloadsStorage.get();
+    const prior = all[jobKey];
+    if (!prior?.chunks?.length) return undefined;
+    if (prior.estimatedBytes !== totalBytes) return undefined;
+    if (prior.chunks.length !== ranges.length) return undefined;
+    // Reject if ANY range boundary disagrees with the prior state — chunking
+    // is deterministic for a given totalBytes but defense in depth.
+    for (let i = 0; i < ranges.length; i++) {
+      const r = ranges[i];
+      const p = prior.chunks[i];
+      if (!p || p.i !== i || p.start !== r.start || p.end !== r.end) return undefined;
+    }
+    const done = prior.chunks.filter(c => c.status === 'done');
+    return done.length > 0 ? done : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const readMaxConnections = async (): Promise<number> => {
+  try {
+    const { mediaSettingsStorage } = await import('@extension/storage');
+    const s = await mediaSettingsStorage.get();
+    return Math.max(1, Math.min(16, Math.floor(s.downloadConnectionsPerFile ?? 8)));
+  } catch {
+    return 8;
+  }
+};
+
+const fetchRangesToOpfs = (args: {
   jobKey: string;
   opfsName: string;
   url: string;
@@ -163,11 +210,15 @@ export const fetchRangesToOpfs = (args: {
       resolve: totalBytes => resolve({ opfsName: args.opfsName, totalBytes }),
       reject,
     });
-    const req: FetchRangesRequest = { type: 'fetch-ranges', jobId, ...args };
-    send(req);
+    void Promise.all([findResumeChunks(args.jobKey, args.ranges, args.totalBytes), readMaxConnections()]).then(
+      ([resumeChunks, maxConnections]) => {
+        const req: FetchRangesRequest = { type: 'fetch-ranges', jobId, ...args, resumeChunks, maxConnections };
+        send(req);
+      },
+    );
   });
 
-export const fetchUrlToOpfs = (args: {
+const fetchUrlToOpfs = (args: {
   jobKey: string;
   opfsName: string;
   url: string;
@@ -183,14 +234,14 @@ export const fetchUrlToOpfs = (args: {
     send(req);
   });
 
-export const getOpfsFile = (opfsName: string): Promise<File> =>
+const getOpfsFile = (opfsName: string): Promise<File> =>
   new Promise((resolve, reject) => {
     const jobId = nextJobId();
     pendingFile.set(jobId, { resolve, reject });
     send({ type: 'get-file', jobId, opfsName });
   });
 
-export const writeBytesToOpfs = (opfsName: string, bytes: ArrayBuffer): Promise<File> =>
+const writeBytesToOpfs = (opfsName: string, bytes: ArrayBuffer): Promise<File> =>
   new Promise((resolve, reject) => {
     const jobId = nextJobId();
     pendingFile.set(jobId, { resolve, reject });
@@ -198,18 +249,18 @@ export const writeBytesToOpfs = (opfsName: string, bytes: ArrayBuffer): Promise<
     getWorker().postMessage({ type: 'write-bytes', jobId, opfsName, bytes }, [bytes]);
   });
 
-export const removeOpfs = (opfsName: string): Promise<void> =>
+const removeOpfs = (opfsName: string): Promise<void> =>
   new Promise((resolve, reject) => {
     const jobId = nextJobId();
     pendingAck.set(jobId, { resolve, reject });
     send({ type: 'remove', jobId, opfsName });
   });
 
-export const cancelWorkerJob = (jobKey: string): void => {
+const cancelWorkerJob = (jobKey: string): void => {
   send({ type: 'cancel', jobKey });
 };
 
-export const muxInWorker = (args: {
+const muxInWorker = (args: {
   jobKey: string;
   outputOpfsName: string;
   ffmpegArgs: string[];
@@ -231,3 +282,14 @@ export const muxInWorker = (args: {
     };
     send(req);
   });
+
+export {
+  fetchSegmentsToOpfs,
+  fetchRangesToOpfs,
+  fetchUrlToOpfs,
+  getOpfsFile,
+  writeBytesToOpfs,
+  removeOpfs,
+  cancelWorkerJob,
+  muxInWorker,
+};
