@@ -1,15 +1,28 @@
 @import '@extension/ui/global.css';
 
+/* Sizing for the browser-action popup. Each value is wrapped in a custom
+   property so a different host (the standalone download window opened by
+   the interceptor) can override the variable in an inline script in
+   popup/index.html before this stylesheet ever applies — eliminating the
+   flash that would otherwise happen while waiting for a JS override. */
+:root {
+  --vidsy-popup-w: 380px;
+  --vidsy-popup-min-h: 520px;
+  --vidsy-popup-h: 600px;
+  --vidsy-popup-max-h: 600px;
+  --vidsy-popup-overflow: hidden;
+}
+
 html,
 body,
 #app-container {
-  width: 380px;
-  min-height: 520px;
-  height: 600px;
-  max-height: 600px;
+  width: var(--vidsy-popup-w);
+  min-height: var(--vidsy-popup-min-h);
+  height: var(--vidsy-popup-h);
+  max-height: var(--vidsy-popup-max-h);
   margin: 0;
   padding: 0;
-  overflow: hidden;
+  overflow: var(--vidsy-popup-overflow);
 }
 
 #app-container {
