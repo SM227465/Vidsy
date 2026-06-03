@@ -29,6 +29,13 @@ For early access to fixes or for development testing:
 
 ## Features
 
+- **Browser download interceptor** *(new in 1.1.0)* — opt-in setting that catches browser-initiated video / audio downloads via `chrome.downloads.onCreated`, cancels the native flow, and offers a "Download File Info" modal with **Start Download** (route through Vidsy) / **Open in Browser** (re-issue natively) / **Cancel**. Filename is editable; large opaque-host downloads (e.g. file-host hash URLs) are recognized via a size heuristic when MIME and filename give no clue
+- **Standalone progress window** *(new in 1.1.0)* — one per intercepted download, opened as a chrome-less popup window so it survives main-browser minimize. Shows filename, source host, status, file size, downloaded / %, transfer rate, time left, resume capability, a big progress bar, and a collapsible per-connection breakdown
+- **Live per-connection breakdown** *(new in 1.1.0)* — the position bar splits each in-flight HTTP Range chunk into a faint extent + a vivid foreground that fills as bytes arrive, and a connections table shows live `downloaded / size` per slot. Padded to a stable 8-row floor so the accordion doesn't jitter as slots cycle
+- **Byte-level resume for HTTP range downloads** *(new in 1.1.0)* — pause preserves the OPFS file and chunk-completion state; resume skips chunks already on disk and continues with only the missing ones. Works within a browser session (the offscreen-doc startup GC purges OPFS on browser restart, falling back cleanly to a full restart)
+- **User-tunable connections-per-file** *(new in 1.1.0)* — Options → "Connections per file" controls how many parallel HTTP Range requests are used for a single download. Range 1-16, default 8
+- **Auto-close standalone window** *(new in 1.1.0)* — opt-in checkbox on the Complete view; window self-closes 3 seconds after the download succeeds
+- **System theme on first run** *(new in 1.1.0)* — extension UI defaults to your OS `prefers-color-scheme` instead of always starting light; manual toggle still wins after that
 - **Automatic media detection** via network request monitoring (`webRequest` API)
 - **HLS/DASH support** with segment downloading, AES-128 decryption, and libav.js remux to MP4
 - **Multi-GB downloads** via OPFS (Origin Private File System) streaming — no 2 GB WASM memory cliff
@@ -43,11 +50,12 @@ For early access to fixes or for development testing:
 - **Main-video filtering** to skip hover previews and tiny player widgets
 - **Disk space preflight** — checks `navigator.storage.estimate()` before large jobs to avoid mid-mux disk failures
 - **Site-specific metadata extraction** for selected platforms
-- **Cancel / stop** any in-progress download with OPFS cleanup
+- **Cancel / stop / pause / resume** any in-progress download with OPFS cleanup
+- **Editable filename in the intercept modal** *(new in 1.1.0)* — rename before clicking Start Download; basename is auto-selected so typing replaces it without losing the extension
 - **Dashboard options page** with settings, download history, and about panel
 - **Popup + Side Panel** — quick-access UIs with download progress bars and media cards
 - **Context menu** — right-click any `<video>` / `<audio>` element to download it
-- **Dark / light theme** — respects system preference
+- **Dark / light theme** — respects system preference on first run, manual override available
 
 ## Supported download strategies
 
