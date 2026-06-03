@@ -16,7 +16,7 @@
 <body>
 
 <h1>Vidsy — Privacy Policy</h1>
-<p class="meta">Last updated: 2026-04-19</p>
+<p class="meta">Last updated: 2026-06-03</p>
 
 <p>Vidsy is a Chrome extension that detects and downloads video and audio streams from web pages. This policy describes what data Vidsy handles and what it does <em>not</em> do.</p>
 
@@ -35,12 +35,24 @@
 </ul>
 
 <h2>Data Vidsy stores locally on your device</h2>
-<p>Vidsy uses <code>chrome.storage.local</code> to persist the following on your machine only. This data never leaves your browser:</p>
+<p>Vidsy uses <code>chrome.storage.local</code> and <code>chrome.storage.session</code> to persist the following on your machine only. This data never leaves your browser:</p>
 <ul>
-  <li>User preferences (theme, filename template, history retention limit, merge toggles)</li>
+  <li>User preferences (theme, filename template, history retention limit, merge toggles, browser-download-interceptor toggle, connections-per-file, auto-close-on-complete, one-time hint dismissal flags)</li>
   <li>Download history (title, source URL, file size, timestamp) — retention is user-configurable and can be cleared at any time from the extension options page</li>
+  <li>In-progress download state (stage, bytes downloaded, per-chunk completion status for HTTP Range downloads) — used to render live progress and to enable byte-level resume of paused downloads within the same browser session. Cleared when the download finishes, is cancelled, or the offscreen document restarts</li>
 </ul>
-<p>During active downloads, Vidsy writes segment data to the Origin Private File System (OPFS) as scratch space for local WebAssembly remuxing. These scratch files are deleted as soon as the download completes or is cancelled.</p>
+<p>During active downloads, Vidsy writes segment data to the Origin Private File System (OPFS) as scratch space for local WebAssembly remuxing and resume. These scratch files are deleted as soon as the download completes or is cancelled, and any orphaned files left behind by a crash are purged the next time the extension's offscreen document starts.</p>
+
+<h2>Browser download interceptor (opt-in)</h2>
+<p>Starting in v1.1.0, Vidsy can offer to handle browser-initiated video and audio downloads through its own pipeline instead of the browser's native flow. The setting is on by default and can be disabled from the extension's Options page.</p>
+<p>When the interceptor is on, Vidsy:</p>
+<ul>
+  <li>Listens to <code>chrome.downloads.onCreated</code> — a browser event fired locally on your machine when any download starts</li>
+  <li>Reads the destination URL, MIME type, file size, suggested filename, and referring page from the event payload, all of which the browser would already pass to the Chrome download UI</li>
+  <li>Filters out non-media downloads (everything that is not <code>video/*</code>, <code>audio/*</code>, or a large opaque media-extension download)</li>
+  <li>Cancels the native download for matching cases and shows an in-page dialog asking whether to route the file through Vidsy or proceed with the browser's native handling</li>
+</ul>
+<p>None of this information is transmitted anywhere. The event payload is read in the extension's local service worker, used solely to render the dialog, and discarded once the user makes a choice. Downloads from <code>blob:</code>, <code>data:</code>, and <code>chrome-extension:</code> URLs (i.e. Vidsy's own outputs) are ignored to avoid intercepting our own files. The interceptor never operates on YouTube, YouTube-nocookie, or googlevideo hosts.</p>
 
 <h2>Remote servers</h2>
 <p>Vidsy does not communicate with any server operated by the developer. The only network requests Vidsy makes are:</p>
@@ -51,7 +63,7 @@
 <p>No analytics, telemetry, crash reporting, or third-party tracking is included.</p>
 
 <h2>Permissions</h2>
-<p>Vidsy's Chrome permissions are documented in the Chrome Web Store listing. Each is scoped to the extension's single purpose: detecting media on the current page and saving downloads to the user's Downloads folder. No permission is used to collect or transmit user data.</p>
+<p>Vidsy's Chrome permissions are documented in the Chrome Web Store listing. Each is scoped to the extension's single purpose: detecting media on the current page and saving downloads to the user's Downloads folder. The <code>downloads</code> permission is additionally used by the optional browser-download interceptor described above. No permission is used to collect or transmit user data.</p>
 
 <h2>Children</h2>
 <p>Vidsy is not directed at children under 13 and does not knowingly collect data from anyone.</p>
