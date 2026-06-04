@@ -117,18 +117,45 @@ export type MediaHistoryItem = MediaItem & {
 export type MediaDetectionState = Record<string, MediaItem[]>;
 export type MediaHistoryState = MediaHistoryItem[];
 
+// Resume manifest persisted in chrome.storage.local on pause so an HTTP-range
+// download can be resumed in a different browser session. Mirrored from the
+// session-scoped mediaDownloadsStorage entry; lifetime is bounded by
+// MediaSettings.pausedDownloadRetentionDays, after which the offscreen-doc
+// startup GC sweeps both the manifest and the underlying OPFS file.
+export type ResumeManifest = {
+  key: string;
+  url: string;
+  fileName?: string;
+  title?: string;
+  item: MediaItem;
+  outputFormat?: 'mp4' | 'mp3';
+  opfsName: string;
+  totalBytes: number;
+  ranges: { start: number; end: number }[];
+  chunks: ChunkProgress[];
+  downloadedBytes: number;
+  pausedAt: number;
+  expiresAt: number;
+};
+
+export type MediaResumablesState = Record<string, ResumeManifest>;
+
 export type MediaSettings = {
   enableHlsMerging: boolean;
   maxHistory: number;
   // Optional filename template. When empty, the downloader falls back to deriveFileName.
   // Supported tokens: {title} {resolution} {ext} {kind} {host} {date}
   filenameTemplate: string;
+  // How long a paused HTTP-range download stays resumable across browser
+  // sessions before its OPFS scratch file gets GC'd. Days. Default 7.
+  pausedDownloadRetentionDays: number;
 };
 
 export const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
   enableHlsMerging: false,
   maxHistory: 30,
   filenameTemplate: '',
+  pausedDownloadRetentionDays: 7,
 };
 
 export const MEDIA_MESSAGE = {

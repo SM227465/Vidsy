@@ -5,8 +5,14 @@ import { dlLog } from './logger';
 import { createId, deriveKind, deriveFileName, isHlsKind, isDashKind, sanitizeFileName } from './media-utils';
 import { updateProgress } from './progress';
 import { buildFilenameContext, renderFilenameTemplate } from '@extension/shared';
-import { mediaDownloadsStorage, mediaSettingsStorage } from '@extension/storage';
-import type { MEDIA_MESSAGE, MediaItem, MediaMessage, SubtitleFormat } from '@extension/shared';
+import { mediaDownloadsStorage, mediaResumablesStorage, mediaSettingsStorage } from '@extension/storage';
+import type { MEDIA_MESSAGE, MediaDownloadProgress, MediaItem, MediaMessage, SubtitleFormat } from '@extension/shared';
+
+// Canonical input OPFS filename for HTTP-range downloads. Must stay in sync with
+// opfsNameFor(key, 'in', 'bin') in chrome-extension/src/offscreen/lib/http-download.ts —
+// the offscreen worker writes to this file, and the OPFS GC reads this name
+// from the resume manifest to decide what to spare on offscreen-doc startup.
+const httpInputOpfsName = (key: string): string => `http-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}-in.bin`;
 
 let offscreenCreated = false;
 
@@ -323,6 +329,8 @@ const runDownloadJob = async (payload: DownloadPayload) => {
     dlLog('handleDownload: success', { downloadId });
     await updateProgress(key, { stage: 'success', downloadedBytes: 0, downloadId: downloadId ?? undefined });
     await addHistoryEntry(mediaItem, 'success', undefined, downloadId ?? undefined);
+    // Successful completion — drop any cross-session resume manifest for this key.
+    void dropResumeManifest(key).catch(() => undefined);
     return { ok: true, downloadId } as const;
   } catch (error) {
     const isAbort = error instanceof Error && (error.name === 'AbortError' || /cancel/i.test(error.message));
@@ -334,8 +342,19 @@ const runDownloadJob = async (payload: DownloadPayload) => {
       // On pause: keep the existing downloadedBytes count so the UI shows
       // where we left off (the chunks are still on disk and will be reused
       // on resume). On cancel: reset to 0 — the OPFS file is purged anyway.
-      const preservedBytes = wasPaused ? ((await mediaDownloadsStorage.get())[key]?.downloadedBytes ?? 0) : 0;
+      // Cast to the shared shape — the storage package's local type copy
+      // lacks `chunks` / `queuePosition`, but the runtime data is authored
+      // by progress.ts using the shared MediaDownloadProgress.
+      const entry = (await mediaDownloadsStorage.get())[key] as MediaDownloadProgress | undefined;
+      const preservedBytes = wasPaused ? (entry?.downloadedBytes ?? 0) : 0;
       await updateProgress(key, { stage, downloadedBytes: preservedBytes });
+      if (wasPaused) {
+        void writeResumeManifest(key, payload, mediaItem, entry).catch(err =>
+          dlLog('writeResumeManifest failed (non-fatal)', err),
+        );
+      } else {
+        void dropResumeManifest(key).catch(() => undefined);
+      }
       return { ok: false, cancelled: true, paused: wasPaused } as const;
     }
 
@@ -347,10 +366,53 @@ const runDownloadJob = async (payload: DownloadPayload) => {
       error: error instanceof Error ? error.message : String(error),
     });
     await addHistoryEntry(mediaItem, 'failed', error instanceof Error ? error.message : String(error));
+    void dropResumeManifest(key).catch(() => undefined);
     return { ok: false, error: error instanceof Error ? error.message : String(error) } as const;
   } finally {
     await removeHeadersForDownload(key);
   }
+};
+
+// Build and persist a ResumeManifest from the session-storage snapshot at pause
+// time. Only HTTP-range downloads carry the chunks array we need; everything
+// else (HLS / DASH / merged) is skipped — cross-session resume for those needs
+// segment-state + manifest re-validation and is out of scope for Sprint 11.
+const writeResumeManifest = async (
+  key: string,
+  payload: DownloadPayload,
+  item: MediaItem,
+  entry: MediaDownloadProgress | undefined,
+): Promise<void> => {
+  if (!entry?.chunks || entry.chunks.length === 0) return;
+  if (!entry.estimatedBytes || entry.estimatedBytes <= 0) return;
+  const settings = await mediaSettingsStorage.get();
+  const retentionDays = Math.max(1, Math.min(30, Math.floor(settings.pausedDownloadRetentionDays ?? 7)));
+  const now = Date.now();
+  const manifest = {
+    key,
+    url: payload.url,
+    fileName: payload.fileName,
+    title: payload.title,
+    item,
+    outputFormat: payload.outputFormat,
+    opfsName: httpInputOpfsName(key),
+    totalBytes: entry.estimatedBytes,
+    ranges: entry.chunks.map(c => ({ start: c.start, end: c.end })),
+    chunks: entry.chunks,
+    downloadedBytes: entry.downloadedBytes,
+    pausedAt: now,
+    expiresAt: now + retentionDays * 86_400_000,
+  };
+  await mediaResumablesStorage.set(prev => ({ ...prev, [key]: manifest }));
+};
+
+const dropResumeManifest = async (key: string): Promise<void> => {
+  await mediaResumablesStorage.set(prev => {
+    if (!(key in prev)) return prev;
+    const next = { ...prev };
+    delete next[key];
+    return next;
+  });
 };
 
 // Register the queue runner now that runDownloadJob is defined. The queue
@@ -443,4 +505,11 @@ export const cancelDownload = (key: string) => {
   // clear progress. Otherwise the offscreen cancel below aborts the running mux.
   void cancelQueued(key);
   chrome.runtime.sendMessage({ type: 'offscreen/cancel', payload: { key } }).catch(() => undefined);
+  // Always drop any cross-session resume manifest. Three cases:
+  // (1) job currently running — the catch block also drops; harmless double-drop.
+  // (2) job queued — no manifest existed; no-op.
+  // (3) entry already in 'paused' state — this IS the user discarding the
+  //     paused download. Without this drop, the manifest would survive and
+  //     the popup would keep showing it as resumable on next session.
+  void dropResumeManifest(key).catch(() => undefined);
 };

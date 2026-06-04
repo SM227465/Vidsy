@@ -11,9 +11,9 @@ import { getOpfsFile, muxInWorker, removeOpfs } from './lib/worker-client';
 // Sweep orphaned OPFS files left over from a prior session (crash,
 // browser kill, extension reload). Fire-and-forget so the message
 // listener stays responsive for fresh downloads.
-void purgeOpfsOrphans().then(({ removed, failed }) => {
-  if (removed > 0 || failed > 0) {
-    console.log(`[Vidsy] OPFS GC: removed ${removed}, failed ${failed}`);
+void purgeOpfsOrphans().then(({ removed, failed, spared }) => {
+  if (removed > 0 || failed > 0 || spared > 0) {
+    console.log(`[Vidsy] OPFS GC: removed ${removed}, spared ${spared}, failed ${failed}`);
   }
 });
 
