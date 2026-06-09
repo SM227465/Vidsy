@@ -3,6 +3,7 @@ import {
   mediaDetectionsStorage,
   mediaDownloadsStorage,
   mediaHistoryStorage,
+  mediaResumablesStorage,
   mediaSettingsStorage,
   exampleThemeStorage,
 } from '@extension/storage';
@@ -13,6 +14,7 @@ import type {
   MediaDownloadProgress,
   MediaHistoryItem,
   MediaItem,
+  MediaResumablesState,
   MediaSettings,
 } from '@extension/shared';
 
@@ -20,8 +22,33 @@ export const useMediaPage = () => {
   const detections = useStorage(mediaDetectionsStorage) as MediaDetectionState;
   const history = (useStorage(mediaHistoryStorage) ?? []) as MediaHistoryItem[];
   const settings = useStorage(mediaSettingsStorage) as MediaSettings;
-  const downloads = (useStorage(mediaDownloadsStorage) ?? {}) as Record<string, MediaDownloadProgress>;
+  const sessionDownloads = (useStorage(mediaDownloadsStorage) ?? {}) as Record<string, MediaDownloadProgress>;
+  const resumables = (useStorage(mediaResumablesStorage) ?? {}) as MediaResumablesState;
   const { isLight } = useStorage(exampleThemeStorage);
+
+  // Hydrate any cross-session paused downloads from the Local-backed resume
+  // manifest into the same shape the Downloads tab already renders. Only
+  // resumables whose key isn't already present in session storage are merged
+  // — once the SW re-issues a DOWNLOAD for the key, it'll show up in session
+  // storage and take precedence.
+  const downloads = useMemo((): Record<string, MediaDownloadProgress> => {
+    const merged: Record<string, MediaDownloadProgress> = { ...sessionDownloads };
+    for (const [key, manifest] of Object.entries(resumables)) {
+      if (merged[key]) continue;
+      merged[key] = {
+        key,
+        stage: 'paused',
+        downloadedBytes: manifest.downloadedBytes,
+        estimatedBytes: manifest.totalBytes,
+        item: manifest.item,
+        outputFormat: manifest.outputFormat,
+        startedAt: manifest.pausedAt,
+        updatedAt: manifest.pausedAt,
+        chunks: manifest.chunks,
+      };
+    }
+    return merged;
+  }, [sessionDownloads, resumables]);
 
   const [tabId, setTabId] = useState<number | null>(null);
   const [downloadState, setDownloadState] = useState<DownloadState>({ busyUrl: null, error: null });
@@ -192,6 +219,7 @@ export const useMediaPage = () => {
     editName,
     setEditName,
     downloads,
+    resumables,
     settings,
     history,
     isLight,

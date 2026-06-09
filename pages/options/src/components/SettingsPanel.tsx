@@ -270,6 +270,56 @@ export const SettingsPanel = ({ isLight }: { isLight: boolean }) => {
 
         <div className={divider} />
 
+        {/* Paused download retention */}
+        <div className="flex items-center justify-between px-5 py-4">
+          <div className="flex items-center gap-3">
+            <div
+              className={cn(
+                'flex h-9 w-9 items-center justify-center rounded-xl',
+                isLight ? 'bg-orange-100 text-orange-600' : 'bg-orange-500/10 text-orange-400',
+              )}>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round">
+                <rect x="6" y="4" width="4" height="16" rx="1" />
+                <rect x="14" y="4" width="4" height="16" rx="1" />
+              </svg>
+            </div>
+            <div>
+              <p className={cn('text-sm font-medium', label)}>Paused download retention</p>
+              <p className={cn('text-xs', sub)}>
+                How long a paused HTTP download stays resumable across browser sessions before its scratch file is
+                cleaned up
+              </p>
+            </div>
+          </div>
+          <select
+            value={settings?.pausedDownloadRetentionDays ?? 7}
+            onChange={e =>
+              mediaSettingsStorage.set(prev => ({ ...prev, pausedDownloadRetentionDays: Number(e.target.value) }))
+            }
+            className={cn(
+              'rounded-lg border px-3 py-1.5 text-sm font-medium outline-none transition',
+              isLight
+                ? 'border-gray-200 bg-gray-50 text-gray-700 hover:border-gray-300'
+                : 'border-white/[0.08] bg-white/[0.04] text-gray-300 hover:border-white/[0.15]',
+            )}>
+            <option value={1}>1 day</option>
+            <option value={7}>7 days</option>
+            <option value={14}>14 days</option>
+            <option value={30}>30 days</option>
+          </select>
+        </div>
+
+        <div className={divider} />
+
         {/* History limit */}
         <div className="flex items-center justify-between px-5 py-4">
           <div className="flex items-center gap-3">

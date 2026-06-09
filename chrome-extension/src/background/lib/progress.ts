@@ -1,4 +1,4 @@
-import { mediaDownloadsStorage } from '@extension/storage';
+import { mediaDownloadsStorage, mediaResumablesStorage } from '@extension/storage';
 import type { ChunkProgress, MediaDownloadProgress, MediaDownloadState, MediaItem } from '@extension/shared';
 
 type ProgressUpdate = {
@@ -58,12 +58,33 @@ export const clearProgress = async (key: string) => {
 
 export const clearTerminalProgress = async (keys?: string[]) => {
   const TERMINAL = new Set(['success', 'failed', 'cancelled', 'paused']);
+  const cleared: string[] = [];
   await mediaDownloadsStorage.set(prev => {
     const next: MediaDownloadState = { ...prev };
     for (const [k, v] of Object.entries(prev)) {
       if (keys && !keys.includes(k)) continue;
-      if (TERMINAL.has(v.stage)) delete next[k];
+      if (TERMINAL.has(v.stage)) {
+        delete next[k];
+        cleared.push(k);
+      }
     }
     return next;
   });
+  if (cleared.length === 0) return;
+  // Drop any cross-session resume manifests for the keys we just cleared.
+  // Without this, a "cleared" paused download would reappear next session as
+  // a hydrated paused row from mediaResumablesStorage.
+  void mediaResumablesStorage
+    .set(prev => {
+      let mutated = false;
+      const next = { ...prev };
+      for (const k of cleared) {
+        if (k in next) {
+          delete next[k];
+          mutated = true;
+        }
+      }
+      return mutated ? next : prev;
+    })
+    .catch(() => undefined);
 };

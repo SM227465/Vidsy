@@ -160,27 +160,46 @@ const fetchSegmentsToOpfs = (args: {
 // chunks that already completed in a paused / interrupted previous run.
 // We only resume if the ranges match (same file, same chunking strategy);
 // otherwise the OPFS bytes would belong to a different layout.
+//
+// Two sources are consulted, in order:
+//   1. mediaDownloadsStorage (session) — populated continuously during a
+//      same-session pause/resume. Wins when present.
+//   2. mediaResumablesStorage (local) — populated on pause as a persistent
+//      snapshot, used to resume after a browser restart. Falls back here when
+//      session storage has no entry (typical post-restart case).
+const validateChunksForRanges = (
+  chunks: ChunkProgress[] | undefined,
+  estimatedBytes: number | undefined,
+  ranges: { start: number; end: number }[],
+  totalBytes: number,
+): ChunkProgress[] | undefined => {
+  if (!chunks?.length) return undefined;
+  if (estimatedBytes !== totalBytes) return undefined;
+  if (chunks.length !== ranges.length) return undefined;
+  // Reject if ANY range boundary disagrees with the prior state — chunking
+  // is deterministic for a given totalBytes but defense in depth.
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i];
+    const p = chunks[i];
+    if (!p || p.i !== i || p.start !== r.start || p.end !== r.end) return undefined;
+  }
+  const done = chunks.filter(c => c.status === 'done');
+  return done.length > 0 ? done : undefined;
+};
+
 const findResumeChunks = async (
   jobKey: string,
   ranges: { start: number; end: number }[],
   totalBytes: number,
 ): Promise<ChunkProgress[] | undefined> => {
   try {
-    const { mediaDownloadsStorage } = await import('@extension/storage');
-    const all = await mediaDownloadsStorage.get();
-    const prior = all[jobKey];
-    if (!prior?.chunks?.length) return undefined;
-    if (prior.estimatedBytes !== totalBytes) return undefined;
-    if (prior.chunks.length !== ranges.length) return undefined;
-    // Reject if ANY range boundary disagrees with the prior state — chunking
-    // is deterministic for a given totalBytes but defense in depth.
-    for (let i = 0; i < ranges.length; i++) {
-      const r = ranges[i];
-      const p = prior.chunks[i];
-      if (!p || p.i !== i || p.start !== r.start || p.end !== r.end) return undefined;
-    }
-    const done = prior.chunks.filter(c => c.status === 'done');
-    return done.length > 0 ? done : undefined;
+    const { mediaDownloadsStorage, mediaResumablesStorage } = await import('@extension/storage');
+    const session = (await mediaDownloadsStorage.get())[jobKey];
+    const fromSession = validateChunksForRanges(session?.chunks, session?.estimatedBytes, ranges, totalBytes);
+    if (fromSession) return fromSession;
+    const manifest = (await mediaResumablesStorage.get())[jobKey];
+    if (!manifest) return undefined;
+    return validateChunksForRanges(manifest.chunks, manifest.totalBytes, ranges, totalBytes);
   } catch {
     return undefined;
   }
