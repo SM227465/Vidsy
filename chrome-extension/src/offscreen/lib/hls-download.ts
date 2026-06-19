@@ -9,6 +9,7 @@ import {
 import { parseHlsPlaylist } from './m3u8-parser';
 import { updateProgress, clearProgress } from './progress';
 import { activeAbortControllers } from './segment-fetcher';
+import { swLog } from './sw-log';
 import { cancelWorkerJob, fetchSegmentsToOpfs, getOpfsFile, muxInWorker, removeOpfs } from './worker-client';
 
 const opfsNameFor = (key: string, tag: string, ext: string): string =>
@@ -16,8 +17,20 @@ const opfsNameFor = (key: string, tag: string, ext: string): string =>
 
 type ResolvedPlaylist = { url: string; manifestText: string };
 
-const resolveVariantPlaylist = async (playlistUrl: string): Promise<ResolvedPlaylist> => {
-  const res = await fetch(playlistUrl, { credentials: 'include' });
+const resolveVariantPlaylist = async (
+  playlistUrl: string,
+  signal?: AbortSignal,
+  depth = 0,
+): Promise<ResolvedPlaylist> => {
+  // Master playlists can point at further playlists; a malformed or malicious
+  // one pointing back at itself would otherwise recurse forever.
+  if (depth > 5) throw new Error('HLS playlist nesting too deep (possible loop)');
+  // Bound the manifest fetch — without a timeout a CDN that accepts the
+  // connection but never responds stalls the whole download at 0 bytes with no
+  // error (it just hangs here forever).
+  const timeoutSignal = AbortSignal.timeout(20_000);
+  const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+  const res = await fetch(playlistUrl, { credentials: 'include', signal: combinedSignal });
   if (!res.ok) throw new Error(`Failed to fetch HLS playlist: ${res.status}`);
   const manifestText = await res.text();
   // SAMPLE-AES / FairPlay / PlayReady / Widevine = DRM. Plain AES-128 is fine — libav handles it.
@@ -46,7 +59,7 @@ const resolveVariantPlaylist = async (playlistUrl: string): Promise<ResolvedPlay
     }
   }
   if (!bestUrl) throw new Error('No variant stream found in master playlist');
-  return resolveVariantPlaylist(bestUrl);
+  return resolveVariantPlaylist(bestUrl, signal, depth + 1);
 };
 
 const mp4StreamCopyArgs = (input: string, output: string): string[] => ['-i', input, '-c', 'copy', '-y', output];
@@ -88,7 +101,7 @@ const hlsMp3TranscodeArgs = (jsfetchUrl: string, output: string): string[] => [
   output,
 ];
 
-export const downloadHlsMuxed = async (
+const downloadHlsMuxed = async (
   playlistUrl: string,
   fileName: string,
   output: 'mp4' | 'mp3',
@@ -96,10 +109,10 @@ export const downloadHlsMuxed = async (
   headers?: Record<string, string>,
 ): Promise<{ blobUrl: string; ext: string }> => {
   void fileName;
-  await updateProgress(key, { stage: 'fetch-manifest', downloadedBytes: 0 });
-
-  const { url: variantUrl, manifestText } = await resolveVariantPlaylist(playlistUrl);
-
+  // Register the abort controller BEFORE any network I/O — a cancel that
+  // lands during the manifest fetch must abort it, not no-op. The fetch
+  // itself runs inside the try so any failure still hits the finally below
+  // and clears the registration.
   const abortController = new AbortController();
   activeAbortControllers.set(key, abortController);
   abortController.signal.addEventListener('abort', () => cancelWorkerJob(key));
@@ -107,11 +120,16 @@ export const downloadHlsMuxed = async (
   const useAuthFallback = needsAuthFallback(headers);
   const ext = output === 'mp3' ? '.mp3' : '.mp4';
   const outputOpfsName = opfsNameFor(key, 'out', output);
-  const durationSeconds = hlsManifestDurationSeconds(manifestText);
   let inputOpfsName: string | null = null;
   let inputBlobUrl: string | null = null;
 
   try {
+    swLog('HLS: start', { key, useAuthFallback });
+    await updateProgress(key, { stage: 'fetch-manifest', downloadedBytes: 0 });
+    const { url: variantUrl, manifestText } = await resolveVariantPlaylist(playlistUrl, abortController.signal);
+    const durationSeconds = hlsManifestDurationSeconds(manifestText);
+    swLog('HLS: manifest resolved', { variantUrl, durationSeconds, bytes: manifestText.length });
+
     if (!useAuthFallback) {
       // Direct: libav demuxes HLS natively and writes the MP4/MP3 to OPFS.
       const jsfetchUrl = jsfetchInputForUrl(variantUrl);
@@ -124,9 +142,31 @@ export const downloadHlsMuxed = async (
       // Auth-fallback: pre-fetch segments into OPFS so DNR-rewritten auth
       // headers reach the CDN, then feed libav an OPFS-backed blob URL.
       const { segments, mapUrl } = parseHlsPlaylist(manifestText, variantUrl);
+      swLog('HLS: parsed playlist', { segments: segments.length, isFmp4: Boolean(mapUrl), mapUrl });
       if (segments.length === 0) throw new Error('No segments in HLS playlist');
       const isFmp4 = Boolean(mapUrl);
       inputOpfsName = opfsNameFor(key, 'in', isFmp4 ? 'mp4' : 'ts');
+
+      // Segments / AES keys / init often live on a different CDN host than
+      // the playlist — widen the SW's DNR header rule before fetching.
+      const extraHosts = new Set<string>();
+      const addHost = (u?: string) => {
+        if (!u) return;
+        try {
+          extraHosts.add(new URL(u).hostname);
+        } catch {
+          /* relative or malformed — already resolved elsewhere */
+        }
+      };
+      segments.forEach(s => {
+        addHost(s.url);
+        addHost(s.keyInfo?.uri);
+      });
+      addHost(mapUrl);
+      await chrome.runtime
+        .sendMessage({ type: 'media/extend-dnr', payload: { key, hostnames: [...extraHosts] } })
+        .catch(() => undefined);
+      swLog('HLS: extend-dnr sent, fetching segments…', { hosts: [...extraHosts] });
 
       const { totalBytes } = await fetchSegmentsToOpfs({
         jobKey: key,
@@ -136,6 +176,7 @@ export const downloadHlsMuxed = async (
         keyHeaders: headers,
         stage: 'download-video',
       });
+      swLog('HLS: segments fetched', { totalBytes });
 
       if (output !== 'mp3' && isFmp4) {
         // init + fMP4 segments concatenated IS a valid MP4 — skip libav entirely.
@@ -193,3 +234,5 @@ export const downloadHlsMuxed = async (
     }
   }
 };
+
+export { resolveVariantPlaylist, mp4StreamCopyArgs, mp3TranscodeArgs, downloadHlsMuxed };

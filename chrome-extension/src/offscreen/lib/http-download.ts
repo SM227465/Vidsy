@@ -1,4 +1,5 @@
 import { registerOutputForCleanup } from './blob-cleanup';
+import { pauseIntentKeys } from './cancel-intent';
 import { jsfetchInputForOpfs, preflightDiskSpace } from './libav-mux';
 import { updateProgress, clearProgress } from './progress';
 import { activeAbortControllers } from './segment-fetcher';
@@ -74,8 +75,9 @@ const computeRanges = (totalBytes: number): { start: number; end: number }[] => 
 
 // Deterministic OPFS filename per (key, tag, ext) so a paused download can be
 // resumed: the next attempt opens the SAME file that holds the bytes already
-// fetched. Across browser sessions the offscreen-doc startup GC purges the
-// file regardless, but in-session pause / resume works.
+// fetched. Across browser sessions the offscreen-doc startup GC spares files
+// referenced by a still-valid resume manifest (mediaResumablesStorage), so
+// both in-session and cross-session pause / resume reuse the bytes on disk.
 const opfsNameFor = (key: string, tag: string, ext: string): string =>
   `http-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}-${tag}.${ext}`;
 
@@ -211,15 +213,25 @@ export const downloadHttpDirect = async (
         /* ignore */
       }
     }
-    void removeOpfs(inputOpfsName).catch(() => undefined);
+    // Pause-abort must keep the partial input — those bytes are exactly what
+    // the resume manifest points at. Hard cancel and real failures discard it.
+    const isPauseAbort = abortController.signal.aborted && pauseIntentKeys.has(key);
+    if (!isPauseAbort) {
+      void removeOpfs(inputOpfsName).catch(() => undefined);
+    }
     if (outputOpfsName && outputOpfsName !== inputOpfsName) {
       void removeOpfs(outputOpfsName).catch(() => undefined);
     }
     throw err;
   } finally {
     activeAbortControllers.delete(key);
-    if (abortController.signal.aborted) {
+    const wasPause = pauseIntentKeys.delete(key);
+    if (abortController.signal.aborted && !wasPause) {
       await updateProgress(key, { stage: 'cancelled', downloadedBytes: 0 });
     }
+    // On pause: write nothing here. The service worker writes the
+    // authoritative 'paused' entry after this rejection propagates, reading
+    // the last real downloadedBytes/chunks from storage — a 'cancelled'/0
+    // write here would zero those out first.
   }
 };

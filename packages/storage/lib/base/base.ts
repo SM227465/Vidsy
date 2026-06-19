@@ -69,10 +69,19 @@ export const createStorage = <D = string>(
   const deserialize = config?.serialization?.deserialize ?? (v => v as D);
 
   // Set global session storage access level for StoryType.Session, only when not already done but needed.
+  // Only privileged extension contexts (background SW, extension pages, offscreen
+  // documents — everything served from the extension origin) may call
+  // setAccessLevel(). Content scripts also import this package but run on the
+  // page's origin; calling it there throws and spams the console on every page
+  // load. They still READ session areas fine once the background has set the
+  // access level.
+  const isPrivilegedContext = typeof location !== 'undefined' && /^(chrome|moz)-extension:$/.test(location.protocol);
+
   if (
     globalSessionAccessLevelFlag === false &&
     storageEnum === StorageEnum.Session &&
-    config?.sessionAccessForContentScripts === true
+    config?.sessionAccessForContentScripts === true &&
+    isPrivilegedContext
   ) {
     checkStoragePermission(storageEnum);
 

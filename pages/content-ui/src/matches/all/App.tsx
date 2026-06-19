@@ -152,6 +152,46 @@ const App = () => {
     setBusyUrl(null);
   }, []);
 
+  /* live recording */
+  const doRecord = useCallback(
+    async (item: MediaItem) => {
+      setBusyUrl(item.url);
+      setOpen(false);
+      await chrome.runtime.sendMessage({
+        type: MEDIA_MESSAGE.RECORD_START,
+        payload: {
+          url: item.url,
+          key: item.url,
+          kind: item.kind,
+          fileName: item.fileName,
+          title: item.title,
+          tabId: tabId ?? undefined,
+          outputFormat: 'mp4',
+          item,
+        },
+      });
+      // Keep busyUrl until storage reports a terminal stage.
+    },
+    [tabId],
+  );
+
+  const doStopRecord = useCallback(async (key: string) => {
+    // Finalize: the background muxes the accumulator and saves the MP4.
+    await chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.RECORD_STOP, payload: { key } });
+  }, []);
+
+  const doDiscardRecord = useCallback(async (key: string) => {
+    await chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.RECORD_STOP, payload: { key, discard: true } });
+    setBusyUrl(null);
+  }, []);
+
+  const doPauseResume = useCallback(async (key: string, paused: boolean) => {
+    await chrome.runtime.sendMessage({
+      type: paused ? MEDIA_MESSAGE.RECORD_RESUME : MEDIA_MESSAGE.RECORD_PAUSE,
+      payload: { key },
+    });
+  }, []);
+
   /* clear busyUrl once storage reports terminal stage */
   useEffect(() => {
     if (!busyUrl) return undefined;
@@ -171,6 +211,16 @@ const App = () => {
     // Only run on first mount (when downloads first becomes available)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [downloads]);
+
+  /* Tick once a second while recording so the elapsed timer advances. Paused
+     recordings stop ticking, so the timer reads frozen until resume. */
+  const anyRecording = Object.values(downloads).some(p => p.stage === 'recording');
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!anyRecording) return undefined;
+    const t = setInterval(() => setTick(x => x + 1), 1000);
+    return () => clearInterval(t);
+  }, [anyRecording]);
 
   const interceptModal = intercept ? <InterceptModal intercept={intercept} onClose={() => setIntercept(null)} /> : null;
 
@@ -239,6 +289,8 @@ const App = () => {
   const bestVariant = primary.variants?.length ? pickBestVariant(primary.variants) : undefined;
   const bestUrl = bestVariant?.url ?? primary.variants?.[0]?.url ?? primary.url;
   const bestQLabel = bestVariant ? qLabel(bestVariant) : '';
+  const isLive = !!primary.isLive;
+  const elapsed = prog?.startedAt ? Math.max(0, Math.floor((Date.now() - prog.startedAt) / 1000)) : 0;
 
   return (
     <>
@@ -249,7 +301,6 @@ const App = () => {
         onMouseLeave={() => setIsHovered(false)}
         style={{ position: 'fixed', top, right, zIndex: 2147483647, pointerEvents: 'auto', fontFamily: FONT }}>
         <PillBar
-          primary={primary}
           isBusy={isBusy}
           prog={prog}
           pct={pct}
@@ -257,6 +308,8 @@ const App = () => {
           bestQLabel={bestQLabel}
           open={open}
           stageShort={stageShort}
+          isLive={isLive}
+          elapsed={elapsed}
           onMainClick={() => {
             if (isBusy) {
               if (activeItem) doCancel(activeItem.url);
@@ -266,6 +319,10 @@ const App = () => {
           }}
           onToggleOpen={() => setOpen(o => !o)}
           onDismiss={() => setDismissed(true)}
+          onRecord={() => doRecord(primary)}
+          onPauseResume={() => activeItem && doPauseResume(activeItem.url, prog?.stage === 'recording-paused')}
+          onStopRecord={() => activeItem && doStopRecord(activeItem.url)}
+          onDiscardRecord={() => activeItem && doDiscardRecord(activeItem.url)}
         />
 
         {open && !isBusy && (

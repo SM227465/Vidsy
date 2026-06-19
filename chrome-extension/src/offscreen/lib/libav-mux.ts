@@ -32,20 +32,31 @@ export const jsfetchInputForOpfs = async (opfsName: string): Promise<{ jsfetchUr
 // Direct (no-auth) variant: wrap any HTTP(S) URL for libav jsfetch.
 export const jsfetchInputForUrl = (url: string): string => `jsfetch:${url}`;
 
-// Best-effort disk preflight. The browser's OPFS pool is shared quota, so we
-// refuse to start a mux that clearly cannot fit. We skip silently when the
-// Storage API is unavailable (older Chromium, private browsing) — libav's own
-// write errors are the last line of defence.
+// Best-effort disk-space advisory. navigator.storage.estimate() is NOT a
+// reliable measure of writable space: privacy browsers (Brave) farble it,
+// Chrome's quota is an intentionally fuzzed fraction of disk that ignores the
+// unlimitedStorage permission we hold, and the input segments we just wrote
+// are already counted in `usage`. Treating its number as a hard limit
+// rejected downloads that fit fine, so this only WARNS. A genuine disk-full
+// still surfaces — loudly and accurately — as a libav/OPFS write error, which
+// is the real last line of defence.
 export const preflightDiskSpace = async (requiredBytes: number): Promise<void> => {
   if (requiredBytes <= 0) return;
   if (!navigator.storage?.estimate) return;
-  const { quota, usage } = await navigator.storage.estimate();
-  if (quota === undefined || usage === undefined) return;
-  const available = quota - usage;
-  if (available >= requiredBytes) return;
-  const reqGb = (requiredBytes / (1024 * 1024 * 1024)).toFixed(2);
-  const availGb = (available / (1024 * 1024 * 1024)).toFixed(2);
-  throw new Error(`Insufficient disk space: need ~${reqGb} GB free, have ${availGb} GB`);
+  try {
+    const { quota, usage } = await navigator.storage.estimate();
+    if (quota === undefined || usage === undefined) return;
+    const available = quota - usage;
+    if (available >= requiredBytes) return;
+    const reqGb = (requiredBytes / (1024 * 1024 * 1024)).toFixed(2);
+    const availGb = (available / (1024 * 1024 * 1024)).toFixed(2);
+    console.warn(
+      `[Vidsy] storage.estimate() reports low headroom (need ~${reqGb} GB, est. ${availGb} GB free). ` +
+        `Proceeding anyway — the estimate is unreliable and a real disk-full will fail at write time.`,
+    );
+  } catch {
+    // estimate() can throw in hardened contexts — never block on it.
+  }
 };
 
 // Sum of #EXTINF values in an HLS variant playlist. Returns undefined when no

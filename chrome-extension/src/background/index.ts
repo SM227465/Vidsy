@@ -1,24 +1,23 @@
 /// <reference types="vite/client" />
 import 'webextension-polyfill';
 import { handleNetworkDetection, upsertDetection, clearTabDetections, setMainVideoPresent } from './lib/detection';
-import { handleDownload, pauseDownload, cancelDownload } from './lib/download';
+import {
+  handleDownload,
+  pauseDownload,
+  cancelDownload,
+  startRecording,
+  stopRecording,
+  pauseRecording,
+  resumeRecording,
+} from './lib/download';
 import { setupDownloadInterceptor, resumeBrowserDownload, openDownloadsWindow } from './lib/download-interceptor';
 import { reorderQueueItem } from './lib/download-queue';
-import { setupHeaderCapture, cleanupStaleDnrRules } from './lib/header-capture';
+import { setupHeaderCapture, cleanupStaleDnrRules, extendHeadersForDownload } from './lib/header-capture';
 import { deriveKind, deriveFileName } from './lib/media-utils';
 import { classifyAndAddUrl } from './lib/paste-url';
 import { updateProgress, clearProgress, clearTerminalProgress } from './lib/progress';
 import { MEDIA_MESSAGE } from '@extension/shared';
 import type { MediaMessage } from '@extension/shared';
-
-// ─── Offscreen error monitor ───
-setInterval(() => {
-  chrome.storage.local.get('__offscreen_error__', res => {
-    if (res.__offscreen_error__) {
-      console.error('FATAL OFFSCREEN ERROR CAUGHT:', res.__offscreen_error__);
-    }
-  });
-}, 1000);
 
 // ─── Header capture & stale DNR cleanup ───
 setupHeaderCapture();
@@ -50,6 +49,19 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
       sendResponse({ ok: true });
       return;
     }
+    if (message.type === 'offscreen/log') {
+      // eslint-disable-next-line no-console
+      console.log('[OFFSCREEN]', message.payload?.msg, message.payload?.data ?? '');
+      sendResponse({ ok: true });
+      return;
+    }
+    if (message.type === 'media/extend-dnr') {
+      // Offscreen parsed the manifest and learned the real segment/key hosts —
+      // widen the header-injection rule for this download to cover them.
+      await extendHeadersForDownload(message.payload.key, message.payload.hostnames ?? []);
+      sendResponse({ ok: true });
+      return;
+    }
     const msg = message as MediaMessage;
     if (msg.type === MEDIA_MESSAGE.DETECTED) {
       await upsertDetection(msg.payload, sender.tab?.id, sender.tab?.url);
@@ -67,6 +79,26 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
       } else {
         cancelDownload(msg.payload.url);
       }
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.RECORD_START) {
+      const result = await startRecording(msg.payload);
+      sendResponse(result);
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.RECORD_STOP) {
+      const result = await stopRecording(msg.payload.key, msg.payload.fileName, msg.payload.discard);
+      sendResponse(result);
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.RECORD_PAUSE) {
+      pauseRecording(msg.payload.key);
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.RECORD_RESUME) {
+      resumeRecording(msg.payload.key);
       sendResponse({ ok: true });
       return;
     }
@@ -295,25 +327,29 @@ const isRestrictedMenuUrl = (url: string | undefined): boolean => {
 };
 
 const createContextMenus = () => {
-  // Idempotent — re-creating on service-worker restart throws "duplicate id".
-  try {
-    chrome.contextMenus.create({
-      id: 'download-media',
-      title: 'Download media',
-      contexts: ['video', 'audio'],
-    });
-  } catch {
-    // Already registered
-  }
-  try {
-    chrome.contextMenus.create({
-      id: 'send-link-to-vidsy',
-      title: 'Send link to Vidsy',
-      contexts: ['link'],
-    });
-  } catch {
-    // Already registered
-  }
+  // create() reports duplicate-id failures via runtime.lastError inside its
+  // callback — a try/catch around the call never fires and just leaves
+  // "Unchecked runtime.lastError" noise. removeAll-then-create is the
+  // idempotent pattern; reading lastError in the callbacks swallows any
+  // residual error.
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create(
+      {
+        id: 'download-media',
+        title: 'Download media',
+        contexts: ['video', 'audio'],
+      },
+      () => void chrome.runtime.lastError,
+    );
+    chrome.contextMenus.create(
+      {
+        id: 'send-link-to-vidsy',
+        title: 'Send link to Vidsy',
+        contexts: ['link'],
+      },
+      () => void chrome.runtime.lastError,
+    );
+  });
 };
 
 chrome.runtime.onInstalled.addListener(createContextMenus);

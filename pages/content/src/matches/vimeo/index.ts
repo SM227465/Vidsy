@@ -23,6 +23,8 @@ const sendCandidate = (candidate: {
         kind: candidate.kind,
         source: 'element' as const,
         title: candidate.title ?? document.title,
+        resolution: candidate.resolution,
+        contentLength: candidate.contentLength,
       },
     })
     .catch(() => undefined);

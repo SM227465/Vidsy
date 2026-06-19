@@ -10,7 +10,16 @@ const topLevelQuality = (item: MediaItem): string => (item.resolution ? shortEdg
 
 export type VideoEntry = { el: HTMLVideoElement; id: string; rect: DOMRect };
 
-export const ACTIVE_STAGES = new Set(['init', 'fetch-manifest', 'download-video', 'download-audio', 'mux', 'finalize']);
+export const ACTIVE_STAGES = new Set([
+  'init',
+  'fetch-manifest',
+  'recording',
+  'recording-paused',
+  'download-video',
+  'download-audio',
+  'mux',
+  'finalize',
+]);
 
 export const pickBestVariant = (vs: MediaVariant[]): MediaVariant | undefined =>
   vs.reduce<MediaVariant | undefined>((b, c) => {

@@ -38,6 +38,8 @@ export const MediaCard = ({
   setEditName,
   onDownload,
   onCancel,
+  onRecord,
+  onStopRecord,
   startEdit,
   copyUrl,
   onDismiss,
@@ -57,6 +59,8 @@ export const MediaCard = ({
   setEditName: (name: string) => void;
   onDownload: (item: MediaItem, fmt?: 'mp4' | 'mp3') => void;
   onCancel: (url: string) => void;
+  onRecord: (item: MediaItem, fmt?: 'mp4' | 'mp3') => void;
+  onStopRecord: (key: string) => void;
   startEdit: (item: MediaItem) => void;
   copyUrl: (url: string) => void;
   onDismiss: () => void;
@@ -85,6 +89,7 @@ export const MediaCard = ({
     'queued',
     'init',
     'fetch-manifest',
+    'recording',
     'download-video',
     'download-audio',
     'mux',
@@ -270,8 +275,9 @@ export const MediaCard = ({
                     ? 'bg-red-100 text-red-600 hover:bg-red-200'
                     : 'bg-red-500/15 text-red-400 hover:bg-red-500/25',
                 )}
-                onClick={() => onCancel(item.url)}>
-                Stop
+                onClick={() => (progress.stage === 'recording' ? onStopRecord(item.url) : onCancel(item.url))}
+                title={progress.stage === 'recording' ? 'Stop recording and save' : 'Cancel'}>
+                {progress.stage === 'recording' ? 'Stop & Save' : 'Stop'}
               </button>
             </div>
           ) : (
@@ -329,6 +335,17 @@ export const MediaCard = ({
                 return null;
               })()}
               <div className="flex-1" />
+              {item.isLive ? (
+                <button
+                  className={cn(
+                    'flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold transition active:scale-[0.97]',
+                    isLight ? 'bg-red-100 text-red-600 hover:bg-red-200' : 'bg-red-500/15 text-red-400 hover:bg-red-500/25',
+                  )}
+                  onClick={() => onRecord(item)}
+                  title="Record this live stream — captures until you press Stop, then saves to MP4">
+                  <span className="h-2 w-2 rounded-full bg-current" /> Record
+                </button>
+              ) : null}
               <button
                 className="flex items-center gap-1 rounded-full bg-blue-500 px-3 py-1 text-[11px] font-semibold text-white shadow-sm shadow-blue-500/25 transition hover:bg-blue-600 active:scale-[0.97]"
                 onClick={() => onDownload(item)}>

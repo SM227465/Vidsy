@@ -23,6 +23,22 @@ export type FetchSegmentsRequest = {
   stage: 'download-video' | 'download-audio';
 };
 
+// Live recording: append a batch of newly-appeared segments to an EXISTING OPFS
+// file (opens non-truncating, never removes on error) so the accumulator grows
+// across many playlist polls. Distinct from fetch-segments, which truncates on
+// open and is a one-shot VOD fetch.
+export type AppendSegmentsRequest = {
+  type: 'append-segments';
+  jobId: string;
+  jobKey: JobKey;
+  opfsName: string;
+  segments: SegmentSpec[];
+  // Sent only on the first append of a recording (fMP4 init segment). The worker
+  // writes it once, while the accumulator is still empty.
+  initUrl?: string;
+  keyHeaders?: Record<string, string>;
+};
+
 export type FetchUrlRequest = {
   type: 'fetch-url';
   jobId: string;
@@ -90,6 +106,7 @@ export type PingRequest = { type: 'ping' };
 
 export type WorkerRequest =
   | FetchSegmentsRequest
+  | AppendSegmentsRequest
   | FetchUrlRequest
   | FetchRangesRequest
   | GetFileRequest
@@ -142,4 +159,16 @@ export type WorkerError = {
 
 export type Pong = { type: 'pong' };
 
-export type WorkerResponse = ProgressUpdate | FetchDone | MuxDone | GetFileDone | RemoveDone | WorkerError | Pong;
+// Diagnostic log relayed from the worker (no chrome.* there) to the SW console
+// via the offscreen worker-client.
+export type WorkerLog = { type: 'log'; msg: string; data?: unknown };
+
+export type WorkerResponse =
+  | ProgressUpdate
+  | FetchDone
+  | MuxDone
+  | GetFileDone
+  | RemoveDone
+  | WorkerError
+  | Pong
+  | WorkerLog;

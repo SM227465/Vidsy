@@ -29,13 +29,21 @@ export class OpfsWritableMap {
     return this.root;
   }
 
-  async open(name: string): Promise<void> {
+  // By default a fresh open truncates — a new download must never inherit
+  // stale bytes from an earlier run that reused the same name. Resume passes
+  // `preserveContents` so the partial bytes written before a pause survive.
+  async open(name: string, opts?: { preserveContents?: boolean }): Promise<void> {
     if (this.entries.has(name)) return;
     const root = await this.getRoot();
     const handle = (await root.getFileHandle(name, { create: true })) as FileSystemFileHandleWithSync;
     const sync = await handle.createSyncAccessHandle();
-    sync.truncate(0);
-    this.entries.set(name, { handle, sync, size: 0 });
+    let size = 0;
+    if (opts?.preserveContents) {
+      size = sync.getSize();
+    } else {
+      sync.truncate(0);
+    }
+    this.entries.set(name, { handle, sync, size });
   }
 
   writeAt(name: string, pos: number, chunk: Uint8Array | ArrayBuffer): number {

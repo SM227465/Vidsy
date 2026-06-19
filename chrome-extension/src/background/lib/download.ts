@@ -1,5 +1,10 @@
 import { cancelQueued, enqueueDownload, setQueueRunner } from './download-queue';
-import { capturedRequestHeaders, injectHeadersForDownload, removeHeadersForDownload } from './header-capture';
+import {
+  capturedRequestHeaders,
+  extendHeadersForDownload,
+  injectHeadersForDownload,
+  removeHeadersForDownload,
+} from './header-capture';
 import { addHistoryEntry } from './history';
 import { dlLog } from './logger';
 import { createId, deriveKind, deriveFileName, isHlsKind, isDashKind, sanitizeFileName } from './media-utils';
@@ -14,14 +19,76 @@ import type { MEDIA_MESSAGE, MediaDownloadProgress, MediaItem, MediaMessage, Sub
 // from the resume manifest to decide what to spare on offscreen-doc startup.
 const httpInputOpfsName = (key: string): string => `http-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}-in.bin`;
 
+// Per-site required request headers for CDN media fetches. Some platforms gate
+// their stream CDNs on a matching Referer/Origin; fetch() can't set those
+// (they're forbidden headers), so we inject them via declarativeNetRequest.
+// Keyed on the page origin rather than the CDN host because the CDN domains
+// rotate (bilivideo.com / bilivideo.cn / akamaized.net / …) while the page
+// origin is stable.
+const siteRequiredHeaders = (pageUrl?: string): Record<string, string> => {
+  if (!pageUrl) return {};
+  let host: string;
+  try {
+    host = new URL(pageUrl).hostname.toLowerCase();
+  } catch {
+    return {};
+  }
+  if (host === 'bilibili.com' || host.endsWith('.bilibili.com')) {
+    return { Referer: 'https://www.bilibili.com/', Origin: 'https://www.bilibili.com' };
+  }
+  if (host === 'bilibili.tv' || host.endsWith('.bilibili.tv')) {
+    return { Referer: 'https://www.bilibili.tv/', Origin: 'https://www.bilibili.tv' };
+  }
+  return {};
+};
+
+// CDN hotlink protection keys on Referer (and sometimes Origin / Cookie). The
+// browser fetch-context headers (Sec-Fetch-*, Accept-*) are noise at best, and
+// when forced onto the offscreen's fetch via DNR they make some CDNs treat it
+// as a cross-site CORS request and withhold the body — the request then hangs.
+// Inject only the auth-relevant subset.
+const AUTH_HEADER_KEYS = new Set(['referer', 'origin', 'cookie', 'user-agent', 'authorization']);
+const essentialHeaders = (h: Record<string, string>): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(h)) {
+    if (AUTH_HEADER_KEYS.has(k.toLowerCase())) out[k] = v;
+  }
+  return out;
+};
+
 let offscreenCreated = false;
 
 // downloadId → blobUrl for OPFS-backed blobs that need offscreen-side cleanup
-// once the browser download completes or is cancelled.
+// once the browser download completes or is cancelled. Mirrored into
+// chrome.storage.session: the SW can sleep during the final disk copy of a
+// multi-GB file, and the onChanged completion event then wakes a fresh worker
+// whose in-memory map is empty — without the mirror, cleanup would never fire
+// and the OPFS scratch file would leak until the next offscreen-doc GC.
 const opfsBackedDownloads = new Map<number, string>();
+const OPFS_BACKED_KEY = 'opfs-backed-downloads';
+
+const persistOpfsBacked = (): void => {
+  chrome.storage.session.set({ [OPFS_BACKED_KEY]: Object.fromEntries(opfsBackedDownloads) }).catch(() => undefined);
+};
+
+void (async () => {
+  try {
+    const stored = await chrome.storage.session.get(OPFS_BACKED_KEY);
+    const saved = stored?.[OPFS_BACKED_KEY] as Record<string, string> | undefined;
+    if (saved) for (const [id, blobUrl] of Object.entries(saved)) opfsBackedDownloads.set(Number(id), blobUrl);
+  } catch {
+    /* start empty */
+  }
+})();
 
 const trackOpfsBackedDownload = (downloadId: number | undefined, blobUrl: string) => {
-  if (typeof downloadId === 'number') opfsBackedDownloads.set(downloadId, blobUrl);
+  if (typeof downloadId !== 'number') return;
+  opfsBackedDownloads.set(downloadId, blobUrl);
+  persistOpfsBacked();
+  // The download is now tracked end-to-end — disarm the offscreen fallback
+  // timer so it can't destroy the OPFS backing mid-copy on a slow disk.
+  // Cleanup fires from handleDownloadStateChange when the copy finishes.
+  chrome.runtime.sendMessage({ type: 'offscreen/disarm-cleanup', payload: { blobUrl } }).catch(() => undefined);
 };
 
 const triggerBlobCleanup = (blobUrl: string) => {
@@ -35,6 +102,7 @@ const handleDownloadStateChange = (delta: chrome.downloads.DownloadDelta) => {
   const blobUrl = opfsBackedDownloads.get(delta.id);
   if (!blobUrl) return;
   opfsBackedDownloads.delete(delta.id);
+  persistOpfsBacked();
   triggerBlobCleanup(blobUrl);
 };
 
@@ -297,24 +365,48 @@ const runDownloadJob = async (payload: DownloadPayload) => {
   const captured = capturedRequestHeaders.get(payload.url)?.headers ?? capturedRequestHeaders.get(key)?.headers;
   dlLog('handleDownload: finding headers for request', captured ?? 'No captured headers found');
 
+  // Site-required headers (e.g. Bilibili gates its stream CDN on a matching
+  // Referer/Origin). The player fetches segments via MSE byte-ranges we may
+  // never have captured — and a quality switch yields a different signed URL
+  // than the one playing — so synthesize them from the page origin. Captured
+  // headers win on conflict since they reflect the live request.
+  const siteHeaders = siteRequiredHeaders(payload.item?.pageUrl);
+  const headers = essentialHeaders({ ...siteHeaders, ...captured });
+
   // Inject Referer/Origin headers via declarativeNetRequest for CDN segment fetches
-  if (captured && Object.keys(captured).length > 0) {
-    await injectHeadersForDownload(payload.url, captured, key);
+  if (Object.keys(headers).length > 0) {
+    await injectHeadersForDownload(payload.url, headers, key);
+    // For merged A/V the audio stream may live on a different CDN host than the
+    // video — extend the same header rule to cover the audio host too.
+    if (payload.audioUrl) {
+      try {
+        await extendHeadersForDownload(key, [new URL(payload.audioUrl).hostname]);
+      } catch {
+        /* malformed audioUrl — ignore */
+      }
+    }
   }
 
+  // Whether this job went down the plain HTTP-range path — the only strategy
+  // whose OPFS scratch file matches the deterministic name a resume manifest
+  // records. Merged jobs also produce chunk state from their range fetches,
+  // but their scratch files carry timestamped `merged-*` names, so a manifest
+  // written for them would point at a file that won't exist on resume.
+  let usedHttpRange = false;
   try {
     const outputFormat = payload.outputFormat ?? 'mp4';
     // HLS must always be muxed — direct download saves the m3u8 playlist as HTML
     const shouldMergeHls = isHlsKind(payload.kind, payload.url);
     const shouldMergeDash = isDashKind(payload.kind, payload.url) && settings.enableHlsMerging;
     const shouldMergeAV = !!payload.audioUrl && !shouldMergeHls && !shouldMergeDash;
+    usedHttpRange = !shouldMergeHls && !shouldMergeDash && !shouldMergeAV;
 
     dlLog('handleDownload: processing strategy', { shouldMergeHls, shouldMergeDash, shouldMergeAV });
 
     const downloadId = shouldMergeHls
-      ? await downloadHlsMuxed(payload.url, fileName, outputFormat, key, captured)
+      ? await downloadHlsMuxed(payload.url, fileName, outputFormat, key, headers)
       : shouldMergeDash
-        ? await downloadDashMuxed(payload.url, fileName, outputFormat, key, captured)
+        ? await downloadDashMuxed(payload.url, fileName, outputFormat, key, headers)
         : shouldMergeAV
           ? await downloadMergedCall(
               payload.url,
@@ -324,7 +416,7 @@ const runDownloadJob = async (payload: DownloadPayload) => {
               payload.item?.mimeType,
               payload.audioMimeType,
             )
-          : await downloadDirect(payload.url, fileName, key, outputFormat, captured);
+          : await downloadDirect(payload.url, fileName, key, outputFormat, headers);
 
     dlLog('handleDownload: success', { downloadId });
     await updateProgress(key, { stage: 'success', downloadedBytes: 0, downloadId: downloadId ?? undefined });
@@ -348,7 +440,7 @@ const runDownloadJob = async (payload: DownloadPayload) => {
       const entry = (await mediaDownloadsStorage.get())[key] as MediaDownloadProgress | undefined;
       const preservedBytes = wasPaused ? (entry?.downloadedBytes ?? 0) : 0;
       await updateProgress(key, { stage, downloadedBytes: preservedBytes });
-      if (wasPaused) {
+      if (wasPaused && usedHttpRange) {
         void writeResumeManifest(key, payload, mediaItem, entry).catch(err =>
           dlLog('writeResumeManifest failed (non-fatal)', err),
         );
@@ -496,7 +588,9 @@ export const handleDownload = async (payload: DownloadPayload) => {
 
 export const pauseDownload = (key: string) => {
   pauseIntents.add(key);
-  chrome.runtime.sendMessage({ type: 'offscreen/cancel', payload: { key } }).catch(() => undefined);
+  // intent: 'pause' tells the offscreen side to keep the partial OPFS input
+  // file alive through the abort so the next start can resume from it.
+  chrome.runtime.sendMessage({ type: 'offscreen/cancel', payload: { key, intent: 'pause' } }).catch(() => undefined);
 };
 
 export const cancelDownload = (key: string) => {
@@ -504,7 +598,7 @@ export const cancelDownload = (key: string) => {
   // If the job is still queued (not yet running), remove it from the queue and
   // clear progress. Otherwise the offscreen cancel below aborts the running mux.
   void cancelQueued(key);
-  chrome.runtime.sendMessage({ type: 'offscreen/cancel', payload: { key } }).catch(() => undefined);
+  chrome.runtime.sendMessage({ type: 'offscreen/cancel', payload: { key, intent: 'cancel' } }).catch(() => undefined);
   // Always drop any cross-session resume manifest. Three cases:
   // (1) job currently running — the catch block also drops; harmless double-drop.
   // (2) job queued — no manifest existed; no-op.
@@ -512,4 +606,113 @@ export const cancelDownload = (key: string) => {
   //     paused download. Without this drop, the manifest would survive and
   //     the popup would keep showing it as resumable on next session.
   void dropResumeManifest(key).catch(() => undefined);
+};
+
+// ── Live HLS recording ──────────────────────────────────────────────────────
+// Recording sessions are long-lived and user-stopped, so they bypass the serial
+// download queue (unlike handleDownload). startRecording kicks off the offscreen
+// poll loop and returns immediately; stopRecording finalizes (mux) and triggers
+// the browser download from the resulting OPFS-backed blob.
+export const startRecording = async (payload: DownloadPayload) => {
+  if (isRestrictedDownloadUrl(payload.url)) {
+    return { ok: false, error: 'This platform is not supported.' } as const;
+  }
+  const key = payload.key ?? payload.url;
+  const fileName =
+    payload.fileName && !payload.fileName.includes('_TPL_')
+      ? payload.fileName
+      : deriveFileName(payload.url, payload.title);
+  const outputFormat = payload.outputFormat ?? 'mp4';
+  const mediaItem: MediaItem = payload.item
+    ? {
+        ...payload.item,
+        fileName,
+        title: payload.title ?? payload.item.title,
+        tabId: payload.tabId ?? payload.item.tabId,
+      }
+    : {
+        id: createId(),
+        url: payload.url,
+        kind: deriveKind(payload.url, undefined),
+        detectedAt: Date.now(),
+        source: 'network',
+        fileName,
+        title: payload.title,
+        tabId: payload.tabId,
+      };
+
+  await updateProgress(key, { stage: 'recording', downloadedBytes: 0 }, { item: mediaItem, outputFormat });
+
+  // Live CDN segments need a matching Referer/Origin (e.g. Bilibili live), which
+  // fetch() can't set — synthesize from the page origin and merge with anything
+  // captured, then inject via DNR (same pattern as runDownloadJob).
+  const siteHeaders = siteRequiredHeaders(payload.item?.pageUrl);
+  const captured = capturedRequestHeaders.get(payload.url)?.headers ?? capturedRequestHeaders.get(key)?.headers;
+  const headers = essentialHeaders({ ...siteHeaders, ...captured });
+  if (Object.keys(headers).length > 0) {
+    await injectHeadersForDownload(payload.url, headers, key);
+  }
+
+  await ensureOffscreen();
+  const res = await sendMessageWithRetry({
+    type: 'offscreen/download-blob',
+    payload: { kind: 'hls-live', url: payload.url, fileName, output: outputFormat, key, headers },
+  });
+  if (!res?.ok) {
+    await removeHeadersForDownload(key);
+    await updateProgress(key, {
+      stage: 'failed',
+      downloadedBytes: 0,
+      error: res?.error || 'Failed to start recording',
+    });
+    return { ok: false, error: res?.error || 'Failed to start recording' } as const;
+  }
+  return { ok: true, recording: true } as const;
+};
+
+export const stopRecording = async (key: string, fileName?: string, discard = false) => {
+  try {
+    const res = await sendMessageWithRetry({ type: 'offscreen/stop-recording', payload: { key, discard } });
+    if (discard) {
+      await updateProgress(key, { stage: 'cancelled', downloadedBytes: 0 });
+      return { ok: true, discarded: true } as const;
+    }
+    if (!res?.ok || !res.blobUrl) {
+      await updateProgress(key, {
+        stage: 'failed',
+        downloadedBytes: 0,
+        error: res?.error || 'Recording could not be finalized',
+      });
+      return { ok: false, error: res?.error || 'Recording could not be finalized' } as const;
+    }
+    const ext = res.ext || '.mp4';
+    const entry = (await mediaDownloadsStorage.get())[key] as MediaDownloadProgress | undefined;
+    const item = entry?.item;
+    const downloadId = await chrome.downloads.download({
+      url: res.blobUrl,
+      filename: ensureExt(fileName ?? item?.fileName ?? 'recording', ext),
+      conflictAction: 'uniquify',
+      saveAs: false,
+    });
+    trackOpfsBackedDownload(downloadId, res.blobUrl);
+    await updateProgress(key, { stage: 'success', downloadedBytes: 0, downloadId: downloadId ?? undefined });
+    if (item) await addHistoryEntry(item, 'success', undefined, downloadId ?? undefined);
+    return { ok: true, downloadId } as const;
+  } finally {
+    await removeHeadersForDownload(key);
+  }
+};
+
+// Pause / resume a live recording. The offscreen engine owns the authoritative
+// stage transition (recording ↔ recording-paused); we just relay the intent.
+export const pauseRecording = (key: string) => {
+  chrome.runtime
+    .sendMessage({ type: 'offscreen/pause-recording', payload: { key, resume: false } })
+    .catch(() => undefined);
+};
+
+export const resumeRecording = (key: string) => {
+  chrome.runtime
+    .sendMessage({ type: 'offscreen/pause-recording', payload: { key, resume: true } })
+    .catch(() => undefined);
 };

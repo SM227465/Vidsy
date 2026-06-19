@@ -165,8 +165,16 @@ const sendInterceptToTab = async (
   tab: chrome.tabs.Tab | undefined,
   item: chrome.downloads.DownloadItem,
 ): Promise<void> => {
+  // The original download was already cancelled AND erased — if the modal
+  // can't be shown (no content-script-capable tab, or the message fails),
+  // we must re-issue the browser download or the user's click is silently
+  // swallowed with no way to recover it.
+  const fallbackToBrowser = () => {
+    resumeBrowserDownload(item.finalUrl || item.url, item.filename ? item.filename.split('/').pop() : undefined);
+  };
   if (!tab?.id) {
-    console.log('[Vidsy] no host tab available — modal cannot show');
+    console.log('[Vidsy] no host tab available — re-issuing browser download');
+    fallbackToBrowser();
     return;
   }
   console.log('[Vidsy] sending intercept modal to tab:', { id: tab.id, url: tab.url });
@@ -196,7 +204,8 @@ const sendInterceptToTab = async (
       },
     });
   } catch (err) {
-    console.log('[Vidsy] sendMessage failed:', err);
+    console.log('[Vidsy] sendMessage failed — re-issuing browser download:', err);
+    fallbackToBrowser();
   }
 };
 

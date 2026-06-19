@@ -58,12 +58,18 @@ export type MediaItem = {
   // True when any variant of this HLS/DASH manifest declared a DRM key system.
   // The downloader is intentionally DRM-blind — this flag just drives the UI lockout.
   isDrmProtected?: boolean;
+  // True when this is a live HLS stream (media playlist with no #EXT-X-ENDLIST).
+  // Drives the Record action in the UI. May be undefined until liveness is known
+  // — the recorder re-validates at start, so the flag is a hint, not a gate.
+  isLive?: boolean;
 };
 
 export type MediaDownloadStage =
   | 'queued'
   | 'init'
   | 'fetch-manifest'
+  | 'recording'
+  | 'recording-paused'
   | 'download-video'
   | 'download-audio'
   | 'mux'
@@ -174,6 +180,10 @@ export const MEDIA_MESSAGE = {
   INTERCEPT_DOWNLOAD_VIDSY: 'media/intercept-download-vidsy',
   INTERCEPT_RESUME_BROWSER: 'media/intercept-resume-browser',
   INTERCEPT_DISMISS: 'media/intercept-dismiss',
+  RECORD_START: 'media/record-start',
+  RECORD_STOP: 'media/record-stop',
+  RECORD_PAUSE: 'media/record-pause',
+  RECORD_RESUME: 'media/record-resume',
 } as const;
 
 export type MediaMessage =
@@ -220,6 +230,22 @@ export type MediaMessage =
     }
   | { type: typeof MEDIA_MESSAGE.INTERCEPT_DOWNLOAD_VIDSY; payload: { url: string; fileName?: string } }
   | { type: typeof MEDIA_MESSAGE.INTERCEPT_RESUME_BROWSER; payload: { url: string; fileName?: string } }
-  | { type: typeof MEDIA_MESSAGE.INTERCEPT_DISMISS; payload: { url: string } };
+  | { type: typeof MEDIA_MESSAGE.INTERCEPT_DISMISS; payload: { url: string } }
+  | {
+      type: typeof MEDIA_MESSAGE.RECORD_START;
+      payload: {
+        url: string;
+        key?: string;
+        kind?: MediaKind;
+        fileName?: string;
+        title?: string;
+        tabId?: number;
+        outputFormat?: 'mp4' | 'mp3';
+        item?: MediaItem;
+      };
+    }
+  | { type: typeof MEDIA_MESSAGE.RECORD_STOP; payload: { key: string; fileName?: string; discard?: boolean } }
+  | { type: typeof MEDIA_MESSAGE.RECORD_PAUSE; payload: { key: string } }
+  | { type: typeof MEDIA_MESSAGE.RECORD_RESUME; payload: { key: string } };
 
 export type PasteUrlResult = { ok: true; kind: MediaKind } | { ok: false; error: string };
