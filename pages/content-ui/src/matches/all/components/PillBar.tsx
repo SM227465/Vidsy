@@ -236,8 +236,10 @@ export const PillBar = ({
           <span>Download</span>
         )}
 
-        {/* Badge: quality label or spinner */}
-        {isBusy && pct === null ? (
+        {/* Badge: quality label or spinner (never spin on a terminal stage —
+            busyUrl lingers ~2s on success/failed so the indeterminate spinner
+            would otherwise keep running next to "✓ Done"). */}
+        {isBusy && pct === null && !['success', 'failed'].includes(prog?.stage ?? '') ? (
           <SpinnerDots />
         ) : !isBusy && bestQLabel ? (
           <span

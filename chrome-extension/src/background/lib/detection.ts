@@ -204,11 +204,15 @@ const consolidateHttpVideoVariants = (items: MediaItem[]): MediaItem[] => {
 
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
-    if (it.kind !== 'video' || !it.duration || !it.url.startsWith('http')) continue;
+    // Progressive MP4s AND HLS playlists get grouped: a player switching quality
+    // fetches a separate variant playlist each time, which would otherwise show
+    // as a duplicate card per resolution. Bucket by kind too so an HLS stream is
+    // never merged with a progressive MP4 of the same duration.
+    if ((it.kind !== 'video' && it.kind !== 'hls') || !it.duration || !it.url.startsWith('http')) continue;
     const host = hostOf(it.url);
     if (!host) continue;
     eligibleIdx.add(i);
-    const key = `${host}|${Math.round(it.duration * 10)}`;
+    const key = `${it.kind}|${host}|${Math.round(it.duration * 10)}`;
     const list = buckets.get(key) ?? [];
     if (!buckets.has(key)) buckets.set(key, list);
 

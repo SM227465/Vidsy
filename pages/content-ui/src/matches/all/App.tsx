@@ -12,7 +12,15 @@ import type { MediaDownloadProgress, MediaItem } from '@extension/shared';
 const App = () => {
   const detections = useStorage(mediaDetectionsStorage);
   const rawDownloads = useStorage(mediaDownloadsStorage);
-  const downloads = useMemo(() => (rawDownloads ?? {}) as Record<string, MediaDownloadProgress>, [rawDownloads]);
+  // Content scripts receive chrome.storage.session onChanged unreliably, so the
+  // useStorage value can freeze mid-download (the side panel, an extension page,
+  // updates fine). `polled` is refreshed by a direct session read while a job is
+  // active (see effect below) and takes precedence so the pill stays live.
+  const [polled, setPolled] = useState<Record<string, MediaDownloadProgress> | null>(null);
+  const downloads = useMemo(
+    () => (polled ?? rawDownloads ?? {}) as Record<string, MediaDownloadProgress>,
+    [polled, rawDownloads],
+  );
   const settings = useStorage(mediaSettingsStorage);
 
   /* tab ID via background message (chrome.tabs not available in content scripts) */
@@ -221,6 +229,34 @@ const App = () => {
     const t = setInterval(() => setTick(x => x + 1), 1000);
     return () => clearInterval(t);
   }, [anyRecording]);
+
+  /* Keep the pill live while a job runs. Content scripts get session onChanged
+     unreliably, so poll the downloads area directly; reset to the useStorage
+     value when idle. */
+  const hasActiveJob = Object.values(downloads).some(
+    p => ACTIVE_STAGES.has(p.stage) || p.stage === 'recording' || p.stage === 'recording-paused',
+  );
+  useEffect(() => {
+    if (!hasActiveJob && !busyUrl) {
+      setPolled(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const v = await chrome.storage.session.get('media-downloads');
+        if (!cancelled) setPolled((v?.['media-downloads'] ?? {}) as Record<string, MediaDownloadProgress>);
+      } catch {
+        /* ignore */
+      }
+    };
+    void poll();
+    const t = setInterval(poll, 700);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [hasActiveJob, busyUrl]);
 
   const interceptModal = intercept ? <InterceptModal intercept={intercept} onClose={() => setIntercept(null)} /> : null;
 

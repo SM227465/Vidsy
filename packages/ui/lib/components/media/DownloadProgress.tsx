@@ -40,7 +40,10 @@ export const DownloadProgress = ({ progress, isLight }: { progress: MediaDownloa
       setSpeed(0);
     }
     tracker.samples.push({ bytes: progress.downloadedBytes, time: now });
-    while (tracker.samples.length > 1 && now - tracker.samples[0].time > SPEED_WINDOW_MS) {
+    // Keep ≥2 samples so the rate still computes when progress updates arrive
+    // sparsely (large HLS segments can land >window apart). Shifting down to a
+    // single sample collapses the span to 0 and hides the speed entirely.
+    while (tracker.samples.length > 2 && now - tracker.samples[0].time > SPEED_WINDOW_MS) {
       tracker.samples.shift();
     }
     const first = tracker.samples[0];
