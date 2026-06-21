@@ -5,11 +5,12 @@
 // ~/.claude/plans/live-hls-recording.md.
 
 import { registerOutputForCleanup } from './blob-cleanup';
-import { mp3TranscodeArgs, mp4StreamCopyArgs, resolveVariantPlaylist } from './hls-download';
+import { mp3TranscodeArgs, resolveVariantPlaylist } from './hls-download';
 import { jsfetchInputForOpfs, preflightDiskSpace } from './libav-mux';
 import { isLivePlaylist, parseHlsPlaylist } from './m3u8-parser';
 import { clearProgress, updateProgress } from './progress';
 import { activeAbortControllers } from './segment-fetcher';
+import { swLog } from './sw-log';
 import { appendSegmentsToOpfs, cancelWorkerJob, getOpfsFile, muxInWorker, removeOpfs } from './worker-client';
 
 type RecorderArgs = {
@@ -38,6 +39,24 @@ const activeRecordings = new Map<string, RecordingHandle>();
 const liveOpfsName = (key: string, tag: string, ext: string): string =>
   `live-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}-${tag}-${Date.now().toString(36)}.${ext}`;
 
+// Remux args for a live recording → MP4. Live segments (TS or fMP4) carry the
+// broadcast's continuous timeline, so a plain stream-copy yields an MP4 whose
+// duration reflects that timeline (hours), not the captured span. `+genpts`
+// regenerates missing PTS and `-avoid_negative_ts make_zero` re-bases the first
+// timestamp to 0, so the muxed file's duration is the actual recording length.
+const liveMp4MuxArgs = (input: string, output: string): string[] => [
+  '-fflags',
+  '+genpts',
+  '-i',
+  input,
+  '-c',
+  'copy',
+  '-avoid_negative_ts',
+  'make_zero',
+  '-y',
+  output,
+];
+
 // Cooperative sleep that wakes early on stop/abort, so Stop latency is bounded by
 // STEP_MS rather than the (multi-second) playlist reload interval.
 const STEP_MS = 250;
@@ -65,9 +84,20 @@ const runRecordingLoop = async (
   let recordedBytes = 0;
 
   try {
-    await updateProgress(key, { stage: 'fetch-manifest', downloadedBytes: 0 });
-    const { url: mediaUrl, manifestText } = await resolveVariantPlaylist(args.playlistUrl);
+    swLog('REC: start', { key, playlistUrl: args.playlistUrl });
+    // Stay in the 'recording' stage from the very start so the content-UI pill
+    // shows the REC / Pause / Stop controls immediately, rather than flashing the
+    // "Downloading…" download pill during manifest resolution.
+    await updateProgress(key, { stage: 'recording', downloadedBytes: 0 });
+    const { url: mediaUrl, manifestText } = await resolveVariantPlaylist(args.playlistUrl, abortController.signal);
     let parsed = parseHlsPlaylist(manifestText, mediaUrl);
+    swLog('REC: manifest resolved', {
+      mediaUrl,
+      isLive: isLivePlaylist(parsed),
+      endList: parsed.endList,
+      segments: parsed.segments.length,
+      isFmp4: Boolean(parsed.mapUrl),
+    });
 
     if (!isLivePlaylist(parsed)) {
       throw new Error('This stream is not live — use Download instead.');
@@ -97,18 +127,32 @@ const runRecordingLoop = async (
           await updateProgress(key, { stage: 'recording', downloadedBytes: recordedBytes });
         }
         const fresh = parsed.segments.filter(s => s.sequenceNumber > lastSeq);
-        if (fresh.length > 0) {
-          const { totalBytes } = await appendSegmentsToOpfs({
-            jobKey: key,
-            opfsName: inputOpfsName,
-            segments: fresh.map(s => ({ url: s.url, keyInfo: s.keyInfo, sequenceNumber: s.sequenceNumber })),
-            initUrl: !initSent && isFmp4 ? parsed.mapUrl : undefined,
-            keyHeaders: headers,
-          });
-          initSent = true;
-          recordedBytes = totalBytes;
-          lastSeq = fresh[fresh.length - 1].sequenceNumber;
-          await updateProgress(key, { stage: 'recording', downloadedBytes: recordedBytes });
+        // Append one segment at a time so a single bad segment (rolled off the
+        // live window, transient 403, expired token) can be skipped without
+        // killing the whole recording — a long live capture must be resilient.
+        for (const seg of fresh) {
+          if (stopping() || handle.paused) break;
+          try {
+            const { totalBytes } = await appendSegmentsToOpfs({
+              jobKey: key,
+              opfsName: inputOpfsName,
+              segments: [{ url: seg.url, keyInfo: seg.keyInfo, sequenceNumber: seg.sequenceNumber }],
+              initUrl: !initSent && isFmp4 ? parsed.mapUrl : undefined,
+              keyHeaders: headers,
+            });
+            initSent = true;
+            recordedBytes = totalBytes;
+            lastSeq = seg.sequenceNumber;
+            await updateProgress(key, { stage: 'recording', downloadedBytes: recordedBytes });
+          } catch (err) {
+            if (abortController.signal.aborted) throw err;
+            // Advance past the failed segment (accept a small gap) and keep going.
+            lastSeq = seg.sequenceNumber;
+            swLog('REC: segment skipped', {
+              seq: seg.sequenceNumber,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }
         }
       }
 
@@ -143,22 +187,15 @@ const runRecordingLoop = async (
     // Finalize: mux the accumulator → MP4/MP3 (mirrors the HLS auth-fallback tail).
     await updateProgress(key, { stage: 'mux', downloadedBytes: recordedBytes });
 
-    if (output !== 'mp3' && isFmp4) {
-      // init + fMP4 segments concatenated IS a valid MP4 — skip libav entirely.
-      const file = await getOpfsFile(inputOpfsName);
-      const blobUrl = URL.createObjectURL(file);
-      registerOutputForCleanup(blobUrl, inputOpfsName);
-      inputOpfsName = null; // handed off to cleanup; don't remove here
-      await clearProgress(key);
-      return { blobUrl, ext: '.mp4' };
-    }
-
+    // Even fMP4 is remuxed through libav (not handed off raw): live segment
+    // timestamps would otherwise give the MP4 a wildly wrong duration. See
+    // liveMp4MuxArgs (re-bases the timeline to start at 0).
     const outputOpfsName = liveOpfsName(key, 'out', output === 'mp3' ? 'mp3' : 'mp4');
     await preflightDiskSpace(recordedBytes);
     const { jsfetchUrl, blobUrl: inputBlobUrl } = await jsfetchInputForOpfs(inputOpfsName);
     try {
       const ffmpegArgs =
-        output === 'mp3' ? mp3TranscodeArgs(jsfetchUrl, outputOpfsName) : mp4StreamCopyArgs(jsfetchUrl, outputOpfsName);
+        output === 'mp3' ? mp3TranscodeArgs(jsfetchUrl, outputOpfsName) : liveMp4MuxArgs(jsfetchUrl, outputOpfsName);
       await muxInWorker({
         jobKey: key,
         outputOpfsName,

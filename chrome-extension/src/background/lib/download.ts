@@ -671,6 +671,11 @@ export const startRecording = async (payload: DownloadPayload) => {
 };
 
 export const stopRecording = async (key: string, fileName?: string, discard = false) => {
+  // Capture the item BEFORE the offscreen finalizes — the recorder clears the
+  // progress entry when its mux completes, so reading it afterward would lose
+  // the fileName and save as the generic "recording.mp4".
+  const entry = (await mediaDownloadsStorage.get())[key] as MediaDownloadProgress | undefined;
+  const item = entry?.item;
   try {
     const res = await sendMessageWithRetry({ type: 'offscreen/stop-recording', payload: { key, discard } });
     if (discard) {
@@ -686,8 +691,6 @@ export const stopRecording = async (key: string, fileName?: string, discard = fa
       return { ok: false, error: res?.error || 'Recording could not be finalized' } as const;
     }
     const ext = res.ext || '.mp4';
-    const entry = (await mediaDownloadsStorage.get())[key] as MediaDownloadProgress | undefined;
-    const item = entry?.item;
     const downloadId = await chrome.downloads.download({
       url: res.blobUrl,
       filename: ensureExt(fileName ?? item?.fileName ?? 'recording', ext),

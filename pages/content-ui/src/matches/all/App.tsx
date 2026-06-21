@@ -220,15 +220,24 @@ const App = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [downloads]);
 
-  /* Tick once a second while recording so the elapsed timer advances. Paused
-     recordings stop ticking, so the timer reads frozen until resume. */
-  const anyRecording = Object.values(downloads).some(p => p.stage === 'recording');
+  /* Elapsed recording time. Accumulate via a 1s tick that runs ONLY while a
+     recording is in the 'recording' stage, so Pause freezes the timer. Deriving
+     it from wall-clock (now - startedAt) would keep advancing through a pause.
+     The accumulator resets when the active recording key changes. */
+  const recEntry = Object.entries(downloads).find(([, p]) => p.stage === 'recording' || p.stage === 'recording-paused');
+  const recKey = recEntry?.[0] ?? null;
+  const isActivelyRecording = recEntry?.[1]?.stage === 'recording';
+  const elapsedRef = useRef<{ key: string | null; seconds: number }>({ key: null, seconds: 0 });
+  if (elapsedRef.current.key !== recKey) elapsedRef.current = { key: recKey, seconds: 0 };
   const [, setTick] = useState(0);
   useEffect(() => {
-    if (!anyRecording) return undefined;
-    const t = setInterval(() => setTick(x => x + 1), 1000);
+    if (!isActivelyRecording) return undefined;
+    const t = setInterval(() => {
+      elapsedRef.current.seconds += 1;
+      setTick(x => x + 1);
+    }, 1000);
     return () => clearInterval(t);
-  }, [anyRecording]);
+  }, [isActivelyRecording, recKey]);
 
   /* Keep the pill live while a job runs. Content scripts get session onChanged
      unreliably, so poll the downloads area directly; reset to the useStorage
@@ -326,7 +335,7 @@ const App = () => {
   const bestUrl = bestVariant?.url ?? primary.variants?.[0]?.url ?? primary.url;
   const bestQLabel = bestVariant ? qLabel(bestVariant) : '';
   const isLive = !!primary.isLive;
-  const elapsed = prog?.startedAt ? Math.max(0, Math.floor((Date.now() - prog.startedAt) / 1000)) : 0;
+  const elapsed = elapsedRef.current.seconds;
 
   return (
     <>
