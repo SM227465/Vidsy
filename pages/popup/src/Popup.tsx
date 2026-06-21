@@ -55,6 +55,8 @@ const Popup = () => {
     onDownload,
     onCancel,
     onPause,
+    onRecord,
+    onStopRecord,
     onRetry,
     onClearDownloads,
     onReorder,
@@ -264,6 +266,7 @@ const Popup = () => {
                     onRetry={onRetry}
                     onPause={onPause}
                     onCancel={onCancel}
+                    onStopRecord={onStopRecord}
                     onRemove={k => onClearDownloads([k])}
                     onReorder={onReorder}
                     queueTotal={queueTotal}
@@ -420,6 +423,8 @@ const Popup = () => {
                 setEditName={setEditName}
                 onDownload={onDownload}
                 onCancel={onCancel}
+                onRecord={onRecord}
+                onStopRecord={onStopRecord}
                 startEdit={startEdit}
                 copyUrl={copyUrl}
                 onDismiss={clearTabDetections}

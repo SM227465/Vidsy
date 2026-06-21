@@ -113,8 +113,8 @@ const extractDashSegmentUrls = (
   return undefined;
 };
 
-const fetchMpdText = async (manifestUrl: string): Promise<string> => {
-  const res = await fetch(manifestUrl, { credentials: 'include' });
+const fetchMpdText = async (manifestUrl: string, signal?: AbortSignal): Promise<string> => {
+  const res = await fetch(manifestUrl, { credentials: 'include', signal });
   if (!res.ok) throw new Error(`Failed to fetch DASH manifest: ${res.status}`);
   return res.text();
 };
@@ -219,8 +219,6 @@ export const downloadDashMuxed = async (
   headers?: Record<string, string>,
 ): Promise<{ blobUrl: string; ext: string }> => {
   void fileName;
-  await updateProgress(key, { stage: 'fetch-manifest', downloadedBytes: 0 });
-
   const abortController = new AbortController();
   activeAbortControllers.set(key, abortController);
   abortController.signal.addEventListener('abort', () => cancelWorkerJob(key));
@@ -228,19 +226,23 @@ export const downloadDashMuxed = async (
   const useAuthFallback = needsAuthFallback(headers);
   const ext = output === 'mp3' ? '.mp3' : '.mp4';
   const outputOpfsName = opfsNameFor(key, 'out', output);
-  // Fetch the MPD once — we need it for duration in both paths and for
-  // segment URLs in the auth-fallback path.
-  const mpdText = await fetchMpdText(manifestUrl);
-  if (/<ContentProtection\b/i.test(mpdText)) {
-    throw new Error('This video is DRM-protected and cannot be downloaded.');
-  }
-  const durationSeconds = dashManifestDurationSeconds(mpdText);
   let videoInputOpfs: string | null = null;
   let audioInputOpfs: string | null = null;
   let videoBlobUrl: string | null = null;
   let audioBlobUrl: string | null = null;
 
   try {
+    await updateProgress(key, { stage: 'fetch-manifest', downloadedBytes: 0 });
+    // Fetch the MPD once — we need it for duration in both paths and for
+    // segment URLs in the auth-fallback path. Inside the try so a DRM
+    // rejection or fetch failure still clears the abort-controller
+    // registration in the finally below (it used to leak).
+    const mpdText = await fetchMpdText(manifestUrl, abortController.signal);
+    if (/<ContentProtection\b/i.test(mpdText)) {
+      throw new Error('This video is DRM-protected and cannot be downloaded.');
+    }
+    const durationSeconds = dashManifestDurationSeconds(mpdText);
+
     if (!useAuthFallback) {
       // Direct: libav demuxes DASH natively, pulling each representation over
       // jsfetch. DNR rewrites still apply to those sub-fetches.
@@ -255,6 +257,26 @@ export const downloadDashMuxed = async (
       // separate OPFS files, then feed libav two jsfetch:blob inputs.
       const tracks = parseDashSegments(mpdText, manifestUrl);
       if (!tracks.video && !tracks.audio) throw new Error('No tracks found in DASH manifest');
+
+      // Segments / init often live on a different CDN host than the MPD —
+      // widen the SW's DNR header rule before fetching.
+      const extraHosts = new Set<string>();
+      const addHost = (u?: string) => {
+        if (!u) return;
+        try {
+          extraHosts.add(new URL(u).hostname);
+        } catch {
+          /* malformed — ignore */
+        }
+      };
+      for (const track of [tracks.video, tracks.audio]) {
+        if (!track) continue;
+        track.segmentUrls.forEach(addHost);
+        addHost(track.initUrl);
+      }
+      await chrome.runtime
+        .sendMessage({ type: 'media/extend-dnr', payload: { key, hostnames: [...extraHosts] } })
+        .catch(() => undefined);
 
       let totalBytes = 0;
 

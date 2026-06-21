@@ -2,7 +2,9 @@
 // The worker owns OPFS. This module is the only place that speaks the worker protocol.
 
 import { updateProgress } from './progress';
+import { swLog } from './sw-log';
 import type {
+  AppendSegmentsRequest,
   FetchRangesRequest,
   FetchSegmentsRequest,
   FetchUrlRequest,
@@ -26,6 +28,7 @@ let jobCounter = 0;
 const getWorker = (): Worker => {
   if (!worker) {
     worker = new Worker(chrome.runtime.getURL('download_worker/main.js'), { type: 'module' });
+    attachListeners(worker);
   }
   return worker;
 };
@@ -54,12 +57,41 @@ const pendingFile = new Map<string, PendingFile>();
 const pendingAck = new Map<string, PendingAck>();
 const pendingMux = new Map<string, PendingMux>();
 
-const ensureListener = (() => {
-  let attached = false;
-  return (): void => {
-    if (attached) return;
-    attached = true;
-    getWorker().addEventListener('message', (ev: MessageEvent<WorkerResponse>) => {
+// Reject every in-flight promise. Without this, a crashed worker (OOM during
+// a large mux is the realistic case) leaves all pending jobs hanging forever
+// and the UI shows the download as running until browser restart.
+const failAllPending = (err: Error): void => {
+  for (const p of pendingFetch.values()) p.reject(err);
+  pendingFetch.clear();
+  for (const p of pendingFile.values()) p.reject(err);
+  pendingFile.clear();
+  for (const p of pendingAck.values()) p.reject(err);
+  pendingAck.clear();
+  for (const p of pendingMux.values()) p.reject(err);
+  pendingMux.clear();
+};
+
+const onWorkerDead = (w: Worker, err: Error): void => {
+  if (worker !== w) return; // already replaced
+  worker = null; // the next job spawns a fresh worker
+  try {
+    w.terminate();
+  } catch {
+    /* already gone */
+  }
+  failAllPending(err);
+};
+
+const attachListeners = (w: Worker): void => {
+  w.addEventListener('error', ev => {
+    onWorkerDead(w, new Error(`Download worker crashed: ${ev.message || 'unknown error'}`));
+  });
+  w.addEventListener('messageerror', () => {
+    // A response failed structured deserialization — we can't tell which job
+    // it belonged to, so fail them all rather than leave one hanging.
+    onWorkerDead(w, new Error('Download worker response could not be deserialized'));
+  });
+  w.addEventListener('message', (ev: MessageEvent<WorkerResponse>) => {
       const msg = ev.data;
       switch (msg.type) {
         case 'progress': {
@@ -128,13 +160,14 @@ const ensureListener = (() => {
         }
         case 'pong':
           return;
+        case 'log':
+          swLog(`[worker] ${msg.msg}`, msg.data);
+          return;
       }
     });
-  };
-})();
+};
 
 const send = (req: WorkerRequest): void => {
-  ensureListener();
   getWorker().postMessage(req);
 };
 
@@ -237,6 +270,26 @@ const fetchRangesToOpfs = (args: {
     );
   });
 
+// Append a batch of live segments to an existing OPFS accumulator. Resolves with
+// the cumulative file size so the recorder can report recorded bytes. Mirrors
+// fetchSegmentsToOpfs but maps to the non-truncating append-segments handler.
+const appendSegmentsToOpfs = (args: {
+  jobKey: string;
+  opfsName: string;
+  segments: SegmentSpec[];
+  initUrl?: string;
+  keyHeaders?: Record<string, string>;
+}): Promise<{ opfsName: string; totalBytes: number }> =>
+  new Promise((resolve, reject) => {
+    const jobId = nextJobId();
+    pendingFetch.set(jobId, {
+      resolve: totalBytes => resolve({ opfsName: args.opfsName, totalBytes }),
+      reject,
+    });
+    const req: AppendSegmentsRequest = { type: 'append-segments', jobId, ...args };
+    send(req);
+  });
+
 const fetchUrlToOpfs = (args: {
   jobKey: string;
   opfsName: string;
@@ -264,7 +317,6 @@ const writeBytesToOpfs = (opfsName: string, bytes: ArrayBuffer): Promise<File> =
   new Promise((resolve, reject) => {
     const jobId = nextJobId();
     pendingFile.set(jobId, { resolve, reject });
-    ensureListener();
     getWorker().postMessage({ type: 'write-bytes', jobId, opfsName, bytes }, [bytes]);
   });
 
@@ -304,6 +356,7 @@ const muxInWorker = (args: {
 
 export {
   fetchSegmentsToOpfs,
+  appendSegmentsToOpfs,
   fetchRangesToOpfs,
   fetchUrlToOpfs,
   getOpfsFile,

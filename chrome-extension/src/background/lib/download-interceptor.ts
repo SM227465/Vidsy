@@ -165,13 +165,22 @@ const sendInterceptToTab = async (
   tab: chrome.tabs.Tab | undefined,
   item: chrome.downloads.DownloadItem,
 ): Promise<void> => {
+  // The original download was already cancelled AND erased — if the modal
+  // can't be shown (no content-script-capable tab, or the message fails),
+  // we must re-issue the browser download or the user's click is silently
+  // swallowed with no way to recover it.
+  const fallbackToBrowser = () => {
+    resumeBrowserDownload(item.finalUrl || item.url, item.filename ? item.filename.split('/').pop() : undefined);
+  };
   if (!tab?.id) {
-    console.log('[Vidsy] no host tab available — modal cannot show');
+    console.log('[Vidsy] no host tab available — re-issuing browser download');
+    fallbackToBrowser();
     return;
   }
-  console.log('[Vidsy] sending intercept modal to tab:', { id: tab.id, url: tab.url });
+  const tabId = tab.id;
+  console.log('[Vidsy] sending intercept modal to tab:', { id: tabId, url: tab.url });
   try {
-    if (!tab.active) await chrome.tabs.update(tab.id, { active: true });
+    if (!tab.active) await chrome.tabs.update(tabId, { active: true });
     if (tab.windowId !== undefined) {
       try {
         await chrome.windows.update(tab.windowId, { focused: true });
@@ -182,22 +191,44 @@ const sendInterceptToTab = async (
   } catch {
     /* ignore focus errors */
   }
+
+  const payload = {
+    url: item.finalUrl || item.url,
+    fileName:
+      (item.filename ? item.filename.split('/').pop() : undefined) ||
+      decodeURIComponent(new URL(item.finalUrl || item.url).pathname.split('/').pop() || ''),
+    mime: item.mime || undefined,
+    fileSize: item.fileSize > 0 ? item.fileSize : item.totalBytes > 0 ? item.totalBytes : undefined,
+    referrer: item.referrer || undefined,
+  };
+  const trySend = async (): Promise<boolean> => {
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: MEDIA_MESSAGE.INTERCEPT_SHOW, payload });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  if (await trySend()) return;
+
+  // The tab has no content script listening — almost always because it was open
+  // before the extension loaded/updated (content scripts only inject on
+  // navigation). Inject the content-ui on demand and retry once before unwinding.
   try {
-    await chrome.tabs.sendMessage(tab.id, {
-      type: MEDIA_MESSAGE.INTERCEPT_SHOW,
-      payload: {
-        url: item.finalUrl || item.url,
-        fileName:
-          (item.filename ? item.filename.split('/').pop() : undefined) ||
-          decodeURIComponent(new URL(item.finalUrl || item.url).pathname.split('/').pop() || ''),
-        mime: item.mime || undefined,
-        fileSize: item.fileSize > 0 ? item.fileSize : item.totalBytes > 0 ? item.totalBytes : undefined,
-        referrer: item.referrer || undefined,
-      },
-    });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content-ui/all.iife.js'] });
+    // Give React time to mount and register the onMessage listener.
+    await new Promise(r => setTimeout(r, 400));
+    if (await trySend()) {
+      console.log('[Vidsy] modal shown after on-demand injection');
+      return;
+    }
   } catch (err) {
-    console.log('[Vidsy] sendMessage failed:', err);
+    console.log('[Vidsy] on-demand content-script injection failed:', err);
   }
+
+  console.log('[Vidsy] modal could not be shown — re-issuing browser download');
+  fallbackToBrowser();
 };
 
 // Synchronous handler — cancels BEFORE any await so Chrome's save-as dialog

@@ -162,6 +162,31 @@ export const useMediaPage = () => {
     setDownloadState({ busyUrl: null, error: null });
   };
 
+  const onRecord = async (item: MediaItem, outputFormat?: 'mp4' | 'mp3') => {
+    setMoreMenuId(null);
+    setDownloadState({ busyUrl: item.url, error: null });
+    const response = await chrome.runtime.sendMessage({
+      type: MEDIA_MESSAGE.RECORD_START,
+      payload: {
+        url: item.url,
+        key: item.url,
+        kind: item.kind,
+        fileName: item.fileName,
+        title: item.title,
+        tabId: tabId ?? undefined,
+        outputFormat: outputFormat ?? 'mp4',
+        item,
+      },
+    });
+    setDownloadState({ busyUrl: null, error: response?.ok ? null : (response?.error ?? 'Could not start recording') });
+  };
+
+  // discard=false → Stop & save (finalize/mux); discard=true → throw away the partial.
+  const onStopRecord = async (key: string, discard = false) => {
+    await chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.RECORD_STOP, payload: { key, discard } });
+    setDownloadState({ busyUrl: null, error: null });
+  };
+
   const onRetry = async (entry: MediaDownloadProgress) => {
     if (!entry.item) return;
     await onDownload(entry.item, entry.outputFormat);
@@ -226,6 +251,8 @@ export const useMediaPage = () => {
     onDownload,
     onCancel,
     onPause,
+    onRecord,
+    onStopRecord,
     onRetry,
     onClearDownloads,
     onReorder,

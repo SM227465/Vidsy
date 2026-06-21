@@ -1,33 +1,65 @@
 import { IconClock } from './icons';
 import { cn } from '../../utils';
-import { formatSpeed } from '@extension/shared';
+import { formatFileSize, formatSpeed } from '@extension/shared';
 import { useEffect, useRef, useState } from 'react';
 import type { MediaDownloadProgress } from '@extension/shared';
 
+// Speed is the byte delta across a sliding window of recent progress samples,
+// not between two adjacent updates: worker progress arrives in bursts (several
+// parallel segment fetches can complete within one repaint), and an
+// instantaneous rate computed across one burst gap spikes to absurd values
+// (hundreds of MB/s) that no smoothing factor can hide.
+const SPEED_WINDOW_MS = 4_000;
+// Don't show a rate until the window spans enough wall-clock time to mean
+// something — below this the first burst dominates.
+const SPEED_MIN_SPAN_MS = 800;
+
 export const DownloadProgress = ({ progress, isLight }: { progress: MediaDownloadProgress; isLight: boolean }) => {
-  const prevRef = useRef<{ bytes: number; time: number } | null>(null);
+  const samplesRef = useRef<{ key: string; stage: string; samples: { bytes: number; time: number }[] }>({
+    key: '',
+    stage: '',
+    samples: [],
+  });
   const [speed, setSpeed] = useState(0);
 
   useEffect(() => {
     const now = Date.now();
-    const prev = prevRef.current;
-    if (prev && progress.downloadedBytes > prev.bytes) {
-      const elapsed = (now - prev.time) / 1000;
-      if (elapsed > 0.25) {
-        const raw = (progress.downloadedBytes - prev.bytes) / elapsed;
-        setSpeed(s => s * 0.3 + raw * 0.7);
-        prevRef.current = { bytes: progress.downloadedBytes, time: now };
-      }
-    } else if (!prev) {
-      prevRef.current = { bytes: progress.downloadedBytes, time: now };
+    const tracker = samplesRef.current;
+    const lastSample = tracker.samples[tracker.samples.length - 1];
+    // A different download, a stage flip (downloadedBytes changes meaning per
+    // stage — segment bytes vs mux output bytes), or a counter reset all
+    // invalidate the window; mixing samples across them fabricates rates.
+    if (
+      tracker.key !== progress.key ||
+      tracker.stage !== progress.stage ||
+      (lastSample && progress.downloadedBytes < lastSample.bytes)
+    ) {
+      tracker.key = progress.key;
+      tracker.stage = progress.stage;
+      tracker.samples = [];
+      setSpeed(0);
     }
-  }, [progress.downloadedBytes]);
+    tracker.samples.push({ bytes: progress.downloadedBytes, time: now });
+    // Keep ≥2 samples so the rate still computes when progress updates arrive
+    // sparsely (large HLS segments can land >window apart). Shifting down to a
+    // single sample collapses the span to 0 and hides the speed entirely.
+    while (tracker.samples.length > 2 && now - tracker.samples[0].time > SPEED_WINDOW_MS) {
+      tracker.samples.shift();
+    }
+    const first = tracker.samples[0];
+    const last = tracker.samples[tracker.samples.length - 1];
+    const spanMs = last.time - first.time;
+    if (spanMs >= SPEED_MIN_SPAN_MS && last.bytes > first.bytes) {
+      setSpeed(((last.bytes - first.bytes) / spanMs) * 1000);
+    }
+  }, [progress.downloadedBytes, progress.stage, progress.key]);
 
   const isMuxing = progress.stage === 'mux';
   const isFinalizing = progress.stage === 'finalize';
   const isFailed = progress.stage === 'failed';
   const isCancelled = progress.stage === 'cancelled';
   const isQueued = progress.stage === 'queued';
+  const isRecording = progress.stage === 'recording';
   const isActive = !isFailed && !isCancelled;
   const isPostDownload = isMuxing || isFinalizing;
 
@@ -70,9 +102,15 @@ export const DownloadProgress = ({ progress, isLight }: { progress: MediaDownloa
             : 'Processing...'
           : isFinalizing
             ? 'Saving...'
-            : pct !== undefined
-              ? `${pct}%`
-              : progress.stage;
+            : isRecording
+              ? 'Recording…'
+              : progress.stage === 'recording-paused'
+                ? 'Paused'
+                : pct !== undefined
+                  ? `${pct}%`
+                  : progress.downloadedBytes > 0
+                    ? `Downloading ${formatFileSize(progress.downloadedBytes)}`
+                    : 'Downloading…';
 
   const speedText = speed > 0 && isActive && !isPostDownload && !isQueued ? formatSpeed(speed) : '';
 

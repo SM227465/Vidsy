@@ -332,7 +332,12 @@ const sendCandidate = (candidate: { url: string; mimeType?: string; kind?: Media
 // badge still appears, just slightly later.
 const MSE_DEFER_MS = 3000;
 let mseDeferTimer: ReturnType<typeof setTimeout> | undefined;
+// Bilibili has a dedicated extractor (matches/bilibili) that surfaces the real
+// DASH video+audio streams. Skip the generic MSE phantom there so the row isn't
+// duplicated with an unfetchable "MSE — no fetchable source" entry.
+const HAS_DEDICATED_EXTRACTOR = /(^|\.)bilibili\.(com|tv)$/i.test(location.hostname);
 const scheduleMseSend = (url: string, el: HTMLMediaElement) => {
+  if (HAS_DEDICATED_EXTRACTOR) return;
   // Once the initial deferred send has fired, downstream loadedmetadata /
   // durationchange events should propagate immediately (sendCandidate has its
   // own re-send guard for richer data). This is critical for pre-roll cases:
@@ -400,7 +405,16 @@ const collectFromElement = (el: HTMLMediaElement) => {
   });
 };
 
+const registeredElements = new WeakSet<HTMLMediaElement>();
+
 const registerElement = (el: HTMLMediaElement) => {
+  // Attribute mutations (SPA players swapping src) re-enter here for the same
+  // element — re-collect its sources, but never stack another listener set.
+  if (registeredElements.has(el)) {
+    collectFromElement(el);
+    return;
+  }
+  registeredElements.add(el);
   const handler = () => collectFromElement(el);
   ['loadedmetadata', 'canplay', 'play', 'durationchange', 'timeupdate'].forEach(event => {
     el.addEventListener(event, handler, { passive: true, once: event === 'timeupdate' });

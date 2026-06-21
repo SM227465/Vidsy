@@ -58,6 +58,41 @@ const probeContentLength = async (url: string, tabId?: number, pageUrl?: string)
   }
 };
 
+// URLs we've already probed for liveness — one network fetch per manifest.
+const livenessProbedUrls = new Set<string>();
+
+// One-shot probe: fetch an HLS manifest (resolving a master → its first variant)
+// and flag the item isLive when the media playlist has no #EXT-X-ENDLIST and is
+// not an explicit VOD. This is what surfaces the Record action for ANY live HLS
+// stream, not just the ones with a dedicated site extractor. Silent on failure.
+const probeHlsLiveness = async (url: string, tabId?: number, pageUrl?: string) => {
+  if (livenessProbedUrls.has(url)) return;
+  livenessProbedUrls.add(url);
+  try {
+    const res = await fetch(url, { credentials: 'include' });
+    if (!res.ok) return;
+    let mediaText = await res.text();
+    // Master playlist → resolve the first variant to inspect a real media playlist.
+    if (/#EXT-X-STREAM-INF/i.test(mediaText)) {
+      const variant = mediaText.split(/\r?\n/).find(l => l.trim() && !l.startsWith('#'));
+      if (variant) {
+        const variantUrl = new URL(variant.trim(), url).toString();
+        const vRes = await fetch(variantUrl, { credentials: 'include' });
+        if (!vRes.ok) return;
+        mediaText = await vRes.text();
+      }
+    }
+    const hasSegments = /#EXTINF/i.test(mediaText);
+    const hasEndList = /#EXT-X-ENDLIST/i.test(mediaText);
+    const isVod = /#EXT-X-PLAYLIST-TYPE:\s*VOD/i.test(mediaText);
+    if (hasSegments && !hasEndList && !isVod) {
+      await upsertDetection({ url, isLive: true }, tabId, pageUrl);
+    }
+  } catch {
+    // CORS/offline/non-HLS — leave isLive undefined (defaults to a normal download).
+  }
+};
+
 const seenUrlsByTab = new Map<number, Set<string>>();
 const seenHlsMasterDirsByTab = new Map<number, Set<string>>();
 // Tabs where a content script has seen a rendered <video>/<audio> element
@@ -68,6 +103,51 @@ const seenHlsMasterDirsByTab = new Map<number, Set<string>>();
 // manifests still pass through — they're valuable even without a visible
 // player and rare on listing pages.
 const tabsWithMainVideo = new Set<number>();
+
+// The content script only publishes presence on TRANSITIONS, so a restarted
+// service worker would gate out network detections on every tab whose player
+// was reported to the previous worker instance. Mirror the set into
+// chrome.storage.session and rehydrate on startup (filtered to live tabs so
+// ids from closed tabs can't sneak back in).
+const MAIN_VIDEO_TABS_KEY = 'tabs-with-main-video';
+
+const persistMainVideoTabs = (): void => {
+  chrome.storage.session.set({ [MAIN_VIDEO_TABS_KEY]: [...tabsWithMainVideo] }).catch(() => undefined);
+};
+
+void (async () => {
+  try {
+    const [stored, tabs] = await Promise.all([chrome.storage.session.get(MAIN_VIDEO_TABS_KEY), chrome.tabs.query({})]);
+    const alive = new Set(tabs.map(t => t.id));
+    const saved = stored?.[MAIN_VIDEO_TABS_KEY] as number[] | undefined;
+    saved?.forEach(id => {
+      if (alive.has(id)) tabsWithMainVideo.add(id);
+    });
+  } catch {
+    // Start with an empty gate — same behavior as before persistence existed.
+  }
+})();
+
+// Per-tab write lock. upsertDetection is a read-modify-write over the tab's
+// item list with awaits in between; bursts of detections (exactly the
+// Instagram multi-rendition case the dedup logic exists for) interleave and
+// silently drop each other's writes without this. Chained per tabKey so
+// different tabs never serialize on each other. Entries are settled promises
+// and the map is bounded by tabs seen in this worker's lifetime.
+const tabLocks = new Map<string, Promise<unknown>>();
+
+const withTabLock = <T>(tabKey: string, fn: () => Promise<T>): Promise<T> => {
+  const prev = tabLocks.get(tabKey) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  tabLocks.set(
+    tabKey,
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return run;
+};
 
 const ensureSeenCache = (tabId?: number) => {
   if (tabId === undefined) return undefined;
@@ -124,11 +204,15 @@ const consolidateHttpVideoVariants = (items: MediaItem[]): MediaItem[] => {
 
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
-    if (it.kind !== 'video' || !it.duration || !it.url.startsWith('http')) continue;
+    // Progressive MP4s AND HLS playlists get grouped: a player switching quality
+    // fetches a separate variant playlist each time, which would otherwise show
+    // as a duplicate card per resolution. Bucket by kind too so an HLS stream is
+    // never merged with a progressive MP4 of the same duration.
+    if ((it.kind !== 'video' && it.kind !== 'hls') || !it.duration || !it.url.startsWith('http')) continue;
     const host = hostOf(it.url);
     if (!host) continue;
     eligibleIdx.add(i);
-    const key = `${host}|${Math.round(it.duration * 10)}`;
+    const key = `${it.kind}|${host}|${Math.round(it.duration * 10)}`;
     const list = buckets.get(key) ?? [];
     if (!buckets.has(key)) buckets.set(key, list);
 
@@ -287,6 +371,14 @@ const dirKey = (url: string) => {
   }
 };
 
+// CDNs rotate auth tokens in the query string (validfrom/validto/hash), so
+// the same playlist re-requested moments later arrives under a different URL.
+// Identity comparisons for manifests must ignore the query.
+const stripQuery = (u: string): string => {
+  const q = u.indexOf('?');
+  return q === -1 ? u : u.slice(0, q);
+};
+
 const writeBadge = async (tabId: number, count: number) => {
   const text = count > 0 ? String(count) : '';
   try {
@@ -385,10 +477,17 @@ const normalizeDetection = (candidate: Partial<MediaItem>, tabId?: number, pageU
     audioMimeType: candidate.audioMimeType,
     subtitles: candidate.subtitles,
     isDrmProtected: candidate.isDrmProtected,
+    isLive: candidate.isLive,
   };
 };
 
-export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: number, pageUrl?: string) => {
+const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: number, pageUrl?: string) => {
+  if (!candidate.url) return;
+  const lockKey = tabId !== undefined ? String(tabId) : 'unknown';
+  return withTabLock(lockKey, () => doUpsertDetection(candidate, tabId, pageUrl));
+};
+
+const doUpsertDetection = async (candidate: Partial<MediaItem>, tabId?: number, pageUrl?: string) => {
   if (!candidate.url) return;
 
   // Normalize CDN byte-range URLs (e.g. Instagram's ?bytestart=...&byteend=...)
@@ -425,12 +524,16 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
   // - HEAD probe results landing after the variant-merge
   // - Late metadata probe sending resolution
   // - Element re-scans firing for a URL that's already merged in
-  const variantOwnerIdx = current.findIndex(it => it.variants?.some(v => v.url === candidate.url));
+  // Match ignoring the query string — the player requests variant playlists
+  // with refreshed tokens, and an exact-URL comparison would let the same
+  // variant dodge the dedup and insert a duplicate row.
+  const candidatePath = stripQuery(candidate.url);
+  const variantOwnerIdx = current.findIndex(it => it.variants?.some(v => stripQuery(v.url) === candidatePath));
   if (variantOwnerIdx !== -1) {
     if (candidate.contentLength || candidate.resolution) {
       const owner = current[variantOwnerIdx];
       const newVariants = (owner.variants ?? []).map(v =>
-        v.url === candidate.url
+        stripQuery(v.url) === candidatePath
           ? {
               ...v,
               contentLength: v.contentLength ?? candidate.contentLength,
@@ -456,6 +559,7 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
     if (candidate.duration && !existing.duration) patch.duration = candidate.duration;
     if (candidate.resolution && !existing.resolution) patch.resolution = candidate.resolution;
     if (candidate.contentLength && !existing.contentLength) patch.contentLength = candidate.contentLength;
+    if (candidate.isLive && !existing.isLive) patch.isLive = candidate.isLive;
     if (candidate.variants?.length && !existing.variants?.length) patch.variants = candidate.variants;
     if (candidate.audioUrl && !existing.audioUrl) {
       patch.audioUrl = candidate.audioUrl;
@@ -600,6 +704,36 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
 
   const seenSet = ensureSeenCache(tabId);
   const normalized = normalizeDetection(candidate, tabId, pageUrl);
+
+  // Same-directory manifest dedup against the STORED list. The exact-URL check
+  // above misses token-rotated re-requests of the same playlist, and the
+  // in-memory dir cache in handleNetworkDetection dies whenever the service
+  // worker sleeps. One video's master/variant playlists live in a single
+  // directory, so fold the new detection into the existing row instead of
+  // inserting a duplicate — adopting the fresher URL when it's at least as
+  // good a download source (masters carry variants; newer tokens outlive old).
+  if (normalized.kind === 'hls' || normalized.kind === 'dash' || normalized.kind === 'mss') {
+    const dir = dirKey(normalized.url);
+    const dupIdx =
+      dir === undefined ? -1 : current.findIndex(it => it.kind === normalized.kind && dirKey(it.url) === dir);
+    if (dupIdx !== -1) {
+      const existing = current[dupIdx];
+      const adoptNewUrl = Boolean(normalized.variants?.length) || !existing.variants?.length;
+      const refreshed: MediaItem = {
+        ...existing,
+        url: adoptNewUrl ? normalized.url : existing.url,
+        variants: normalized.variants?.length ? normalized.variants : existing.variants,
+        thumbnail: existing.thumbnail ?? normalized.thumbnail,
+        duration: existing.duration ?? normalized.duration,
+        isDrmProtected: existing.isDrmProtected || normalized.isDrmProtected || undefined,
+      };
+      const updatedList = current.map((it, i) => (i === dupIdx ? refreshed : it));
+      setTabItems(tabKey, updatedList);
+      if (tabId !== undefined) updateBadge(tabId, updatedList.length);
+      return;
+    }
+  }
+
   // When an HLS/DASH/MSS manifest arrives, drop any pre-existing video/audio/MSE
   // entries for this tab — they are almost certainly player-side requests or the
   // MediaSource shell for the same stream (Instagram, for example, fires
@@ -622,6 +756,13 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
     normalized.url.startsWith('http')
   ) {
     void probeContentLength(normalized.url, tabId, pageUrl);
+  }
+
+  // For HLS manifests, probe once whether the stream is live so the UI can offer
+  // Record (vs Download). Works for any site; dedicated extractors may set isLive
+  // up front, in which case we skip the probe.
+  if (normalized.kind === 'hls' && normalized.isLive === undefined && normalized.url.startsWith('http')) {
+    void probeHlsLiveness(normalized.url, tabId, pageUrl);
   }
 
   if (tabId !== undefined) {
@@ -748,7 +889,14 @@ export const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: num
   }
 };
 
-export const clearTabDetections = async (tabId: number) => {
+const clearTabDetections = async (tabId: number) => {
+  // Same lock as upsertDetection — a clear racing an in-flight upsert must
+  // not interleave with its read-modify-write.
+  const lockKey = String(tabId);
+  return withTabLock(lockKey, () => doClearTabDetections(tabId));
+};
+
+const doClearTabDetections = async (tabId: number) => {
   const tabKey = String(tabId);
   const pendingWrite = tabWriteTimers.get(tabKey);
   if (pendingWrite) {
@@ -765,6 +913,7 @@ export const clearTabDetections = async (tabId: number) => {
   seenUrlsByTab.delete(tabId);
   seenHlsMasterDirsByTab.delete(tabId);
   tabsWithMainVideo.delete(tabId);
+  persistMainVideoTabs();
   const pendingBadge = badgeTimers.get(tabId);
   if (pendingBadge) {
     clearTimeout(pendingBadge);
@@ -894,6 +1043,9 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
 export const setMainVideoPresent = (tabId: number, present: boolean) => {
   if (present) tabsWithMainVideo.add(tabId);
   else tabsWithMainVideo.delete(tabId);
+  persistMainVideoTabs();
 };
 
 export const hasMainVideo = (tabId: number) => tabsWithMainVideo.has(tabId);
+
+export { upsertDetection, clearTabDetections };

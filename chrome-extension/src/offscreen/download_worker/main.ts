@@ -7,6 +7,7 @@ import { createLibAV, registerJsfetch, registerOutputDevice } from './libav';
 import { opfs } from './opfs';
 import { decryptSegment } from '../lib/hls-crypto';
 import type {
+  AppendSegmentsRequest,
   FetchRangesRequest,
   FetchSegmentsRequest,
   FetchUrlRequest,
@@ -19,10 +20,34 @@ import type { ChunkProgress } from '@extension/shared';
 
 const MAX_CONCURRENT = 8;
 const MAX_RETRIES = 3;
-const SEGMENT_TIMEOUT_MS = 30_000;
+// Total per-segment fetch budget. Some sites (e.g. Pornhub HLS) use very large
+// segments (~10-20 MB); with MAX_CONCURRENT fetches splitting the link, a single
+// segment can legitimately take well over 30s, so a tight timeout aborts healthy
+// downloads and forces wasteful retries. 90s gives big segments room.
+const SEGMENT_TIMEOUT_MS = 90_000;
+// How many times a single chunk may be re-queued after a connection-style
+// failure before we give up on it. Generous because the first burst against a
+// single-connection host produces several at once.
+const MAX_CHUNK_REQUEUES = 6;
 
 const post = (msg: WorkerResponse): void => {
   (self as unknown as Worker).postMessage(msg);
+};
+
+// Diagnostic log → relayed by worker-client to the SW console.
+const wlog = (msg: string, data?: unknown): void => post({ type: 'log', msg, data });
+
+// Distinguish a permanent per-URL failure from a transient "the host won't
+// give me another connection right now" failure. Free file hosts (k2s /
+// filestore-style) cap free users to ONE connection and reject the rest with a
+// reset, a timeout, or 429/503 — those are retryable at lower concurrency. A
+// 4xx (403/404/410/416) is the chunk URL itself being bad and won't improve.
+const isHardHttpError = (err: unknown): boolean => {
+  const msg = err instanceof Error ? err.message : String(err);
+  const m = /HTTP (\d{3})/.exec(msg);
+  if (!m) return false; // network error / timeout — worth retrying sequentially
+  const code = Number(m[1]);
+  return code >= 400 && code < 500 && code !== 429 && code !== 408;
 };
 
 const activeAborts = new Map<string, AbortController>();
@@ -66,6 +91,11 @@ const fetchWithRetry = async (
       }
       return out.buffer;
     } catch (err) {
+      wlog('fetch attempt failed', {
+        url: url.slice(0, 90),
+        attempt,
+        err: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      });
       if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
       if (attempt === retries - 1) throw err;
       await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
@@ -98,13 +128,17 @@ const parallelFetchToOpfs = async (args: {
   // else worker default. Clamped to a safe band so a corrupted setting
   // can't DoS the server or starve the dispatcher.
   const maxConcurrent = Math.max(1, Math.min(16, args.maxConcurrent ?? MAX_CONCURRENT));
+  // Mutable: collapses to 1 the moment a connection-style failure tells us the
+  // host won't serve parallel requests, so the job degrades to sequential
+  // instead of failing. Never climbs back up for this job.
+  let activeLimit = maxConcurrent;
 
   const pending = new Map<number, Uint8Array>();
   let nextToWrite = 0;
-  let inFlight = 0;
-  let cursor = 0;
-  let finishedDispatching = false;
+  // Only fatal (non-retryable) errors land here; a connection-style failure
+  // re-queues the chunk instead.
   const errors: Error[] = [];
+  const requeues = new Map<number, number>();
 
   // Build chunk states, hydrating any chunks that already completed in a
   // prior run from `resumeChunks` so we can skip them. For range downloads
@@ -119,6 +153,14 @@ const parallelFetchToOpfs = async (args: {
     return { i, start: m.start, end: m.end, downloaded: 0, status: 'pending' as const };
   });
   let completedCount = chunkStates?.filter(c => c.status === 'done').length ?? 0;
+
+  // Work queue of indices still to fetch (resume-completed chunks excluded).
+  // A connection-style failure pushes the chunk back here rather than aborting.
+  const queue: number[] = [];
+  for (let i = 0; i < count; i++) {
+    if (chunkStates && chunkStates[i]?.status === 'done') continue;
+    queue.push(i);
+  }
 
   const flushInOrder = (): void => {
     while (pending.has(nextToWrite)) {
@@ -176,8 +218,32 @@ const parallelFetchToOpfs = async (args: {
         chunks: chunkStates ? chunkStates.map(c => ({ ...c })) : undefined,
       });
     } catch (err) {
-      if (chunkStates && chunkStates[index]) chunkStates[index].status = 'error';
-      errors.push(err instanceof Error ? err : new Error(String(err)));
+      // User cancel/pause — bubble up via the signal check after the pool; not
+      // a chunk failure to retry.
+      if (signal.aborted) {
+        if (chunkStates && chunkStates[index]) chunkStates[index].status = 'error';
+        return;
+      }
+      // A bad chunk URL (4xx) is permanent — fail the job.
+      if (isHardHttpError(err)) {
+        if (chunkStates && chunkStates[index]) chunkStates[index].status = 'error';
+        errors.push(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+      // Connection-style failure: the host is refusing this parallel
+      // connection. Collapse to a single sequential connection and re-queue
+      // the chunk. The first chunk that ever succeeded proves the URL is good,
+      // so once we stop hammering the host the re-queued chunks go through.
+      activeLimit = 1;
+      const tries = (requeues.get(index) ?? 0) + 1;
+      requeues.set(index, tries);
+      if (tries > MAX_CHUNK_REQUEUES) {
+        if (chunkStates && chunkStates[index]) chunkStates[index].status = 'error';
+        errors.push(err instanceof Error ? err : new Error(String(err)));
+        return;
+      }
+      if (chunkStates && chunkStates[index]) chunkStates[index].status = 'pending';
+      queue.push(index);
     }
   };
 
@@ -208,26 +274,35 @@ const parallelFetchToOpfs = async (args: {
 
   try {
     await new Promise<void>(resolve => {
-      const tick = (): void => {
-        if (signal.aborted || errors.length > 0) {
-          if (inFlight === 0) resolve();
-          return;
-        }
-        while (inFlight < maxConcurrent && cursor < count) {
-          const i = cursor++;
-          inFlight++;
-          dispatchOne(i).finally(() => {
-            inFlight--;
-            if (finishedDispatching && inFlight === 0) resolve();
-            else tick();
-          });
-        }
-        if (cursor >= count) {
-          finishedDispatching = true;
-          if (inFlight === 0) resolve();
+      let active = 0;
+      let settled = false;
+      const settle = (): void => {
+        if (settled) return;
+        // Done when nothing is in flight and there's nothing left to start —
+        // either the queue drained, the user aborted, or a chunk failed
+        // fatally. Re-queued chunks keep the queue non-empty, so a connection-
+        // limited host keeps draining one chunk at a time instead of resolving.
+        if (active === 0 && (queue.length === 0 || signal.aborted || errors.length > 0)) {
+          settled = true;
+          resolve();
         }
       };
-      tick();
+      const pump = (): void => {
+        if (signal.aborted || errors.length > 0) {
+          settle();
+          return;
+        }
+        while (active < activeLimit && queue.length > 0) {
+          const i = queue.shift()!;
+          active++;
+          dispatchOne(i).finally(() => {
+            active--;
+            pump();
+          });
+        }
+        settle();
+      };
+      pump();
     });
   } finally {
     clearInterval(snapshotHandle);
@@ -238,6 +313,53 @@ const parallelFetchToOpfs = async (args: {
   flushInOrder();
   // One final snapshot so the UI sees the post-flush state immediately.
   postSnapshot();
+};
+
+const handleAppendSegments = async (req: AppendSegmentsRequest): Promise<void> => {
+  const controller = new AbortController();
+  activeAborts.set(req.jobKey, controller);
+  const { jobId, jobKey, opfsName, segments, initUrl, keyHeaders } = req;
+  void jobKey;
+
+  try {
+    // preserveContents → land appends after the bytes from earlier polls; the
+    // accumulator survives even if the offscreen doc is torn down between polls.
+    await opfs.open(opfsName, { preserveContents: true });
+
+    // Init (fMP4 map) is written exactly once, while the accumulator is empty.
+    if (initUrl && opfs.size(opfsName) === 0) {
+      const init = await fetchWithRetry(initUrl, controller.signal, keyHeaders);
+      opfs.append(opfsName, init);
+    }
+
+    // Append in playlist order. Batches are small (typically 1-3 new segments
+    // per poll), so an ordered sequential fetch is simpler than the parallel
+    // positional writes the VOD path uses — and keeps the file byte-contiguous.
+    for (let i = 0; i < segments.length; i++) {
+      if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      const spec: SegmentSpec = segments[i];
+      let data = await fetchWithRetry(spec.url, controller.signal, keyHeaders);
+      if (spec.keyInfo?.method === 'AES-128') {
+        data = await decryptSegment(data, spec.keyInfo, spec.sequenceNumber, keyHeaders);
+      }
+      opfs.append(opfsName, data);
+    }
+
+    const totalBytes = opfs.size(opfsName);
+    await opfs.close(opfsName);
+    post({ type: 'fetch-done', jobId, opfsName, totalBytes });
+  } catch (err) {
+    // Keep the partial file — the recorder reopens it on the next poll or to
+    // finalize. Only flush + release the handle.
+    try {
+      await opfs.close(opfsName);
+    } catch {
+      /* ignore */
+    }
+    post({ type: 'error', jobId, error: err instanceof Error ? err.message : String(err) });
+  } finally {
+    activeAborts.delete(req.jobKey);
+  }
 };
 
 const handleFetchSegments = async (req: FetchSegmentsRequest): Promise<void> => {
@@ -271,8 +393,10 @@ const handleFetchSegments = async (req: FetchSegmentsRequest): Promise<void> => 
       signal: controller.signal,
     });
 
-    await opfs.close(opfsName);
+    // Snapshot the size BEFORE close — close() drops the map entry and size()
+    // would report 0 afterwards.
     const totalBytes = opfs.size(opfsName);
+    await opfs.close(opfsName);
     post({ type: 'fetch-done', jobId, opfsName, totalBytes });
   } catch (err) {
     try {
@@ -292,7 +416,11 @@ const handleFetchRanges = async (req: FetchRangesRequest): Promise<void> => {
   const { jobId, jobKey, opfsName, url, ranges, stage, totalBytes: knownTotal } = req;
 
   try {
-    await opfs.open(opfsName);
+    // Resume must NOT truncate: the partial bytes from the paused run are the
+    // whole point. Fresh downloads still truncate so a reused name can't leak
+    // stale bytes into the output.
+    const wantsResume = (req.resumeChunks?.length ?? 0) > 0;
+    await opfs.open(opfsName, { preserveContents: wantsResume });
 
     // If the offscreen-doc GC purged the OPFS file between runs (or this is a
     // fresh download with the same key as something canceled long ago), the
@@ -319,8 +447,9 @@ const handleFetchRanges = async (req: FetchRangesRequest): Promise<void> => {
       maxConcurrent: req.maxConnections,
     });
 
+    const totalBytes = opfs.size(opfsName);
     await opfs.close(opfsName);
-    post({ type: 'fetch-done', jobId, opfsName, totalBytes: opfs.size(opfsName) });
+    post({ type: 'fetch-done', jobId, opfsName, totalBytes });
   } catch (err) {
     const isAbort = err instanceof DOMException && err.name === 'AbortError';
     // Pause = abort. Keep the OPFS file so the next start can resume from
@@ -441,8 +570,8 @@ const handleMux = async (req: MuxRequest): Promise<void> => {
     if (pollHandle) clearInterval(pollHandle);
     pollHandle = null;
 
-    await opfs.close(outputOpfsName);
     const totalBytes = opfs.size(outputOpfsName);
+    await opfs.close(outputOpfsName);
     console.log(`[mux] done jobKey=${jobKey} totalBytes=${totalBytes}`);
     post({ type: 'mux-done', jobId, outputOpfsName, totalBytes });
   } catch (err) {
@@ -492,8 +621,9 @@ const handleFetchUrl = async (req: FetchUrlRequest): Promise<void> => {
       post({ type: 'progress', jobKey, stage, downloadedBytes: downloaded, estimatedBytes });
     }
 
+    const totalBytes = opfs.size(opfsName);
     await opfs.close(opfsName);
-    post({ type: 'fetch-done', jobId, opfsName, totalBytes: opfs.size(opfsName) });
+    post({ type: 'fetch-done', jobId, opfsName, totalBytes });
   } catch (err) {
     try {
       await opfs.remove(opfsName);
@@ -556,6 +686,10 @@ self.addEventListener('message', async (event: MessageEvent<WorkerRequest>) => {
 
     case 'fetch-segments':
       void handleFetchSegments(req);
+      return;
+
+    case 'append-segments':
+      void handleAppendSegments(req);
       return;
 
     case 'fetch-ranges':

@@ -24,10 +24,68 @@ const pending: QueuedJob[] = [];
 const running = new Set<string>();
 let runner: Runner | null = null;
 
+// ─── Queue persistence across service-worker restarts ───
+// The queue lives in SW memory; a worker restart (crash, extension reload,
+// browser killing an idle worker) would otherwise strand progress entries at
+// stage 'queued' with nothing left to run them. Snapshot pending jobs into
+// chrome.storage.session — it survives SW restarts and clears with the
+// browser session, matching the session-scoped progress entries the UI
+// renders — and rehydrate when the runner registers on SW startup.
+const QUEUE_STORAGE_KEY = 'media-queue-snapshot';
+
+const persistQueue = (): void => {
+  chrome.storage.session.set({ [QUEUE_STORAGE_KEY]: pending }).catch(() => undefined);
+};
+
+const rehydrateQueue = async (): Promise<void> => {
+  try {
+    const res = await chrome.storage.session.get(QUEUE_STORAGE_KEY);
+    const saved = res?.[QUEUE_STORAGE_KEY] as QueuedJob[] | undefined;
+    if (!Array.isArray(saved) || saved.length === 0) return;
+    for (const job of saved) {
+      if (!job?.key || !job.payload || !job.item) continue;
+      // A fresh enqueue may have raced ahead of this storage read — skip dupes.
+      if (running.has(job.key) || pending.some(j => j.key === job.key)) continue;
+      pending.push(job);
+    }
+    if (pending.length === 0) return;
+    await refreshQueuePositions();
+    void drain();
+  } catch {
+    // Snapshot unreadable — nothing to restore.
+  }
+};
+
+// ─── Keep-alive while jobs are queued or running ───
+// MV3 kills an idle SW after ~30s. Offscreen progress messages usually reset
+// the idle timer during a download, but there are silent stretches (libav
+// demuxing before the first output byte lands) that can exceed it — and a
+// dead SW orphans the job: the offscreen mux finishes, but its response
+// channel is gone and the final chrome.downloads.download never fires. Tick a
+// cheap extension API call while anything is in flight; stop when the queue
+// drains so the worker can sleep normally.
+const KEEPALIVE_TICK_MS = 20_000;
+let keepaliveHandle: ReturnType<typeof setInterval> | null = null;
+
+const updateKeepalive = (): void => {
+  const busy = running.size > 0 || pending.length > 0;
+  if (busy && keepaliveHandle === null) {
+    keepaliveHandle = setInterval(() => {
+      chrome.runtime.getPlatformInfo().catch(() => undefined);
+    }, KEEPALIVE_TICK_MS);
+  } else if (!busy && keepaliveHandle !== null) {
+    clearInterval(keepaliveHandle);
+    keepaliveHandle = null;
+  }
+};
+
 // Persist a 'queued' progress entry for every pending job, with 1-based position
 // so the UI can render "Queued #2". Also clears positions on items that are
-// no longer in the queue (e.g. just dequeued for running).
+// no longer in the queue (e.g. just dequeued for running). Doubles as the
+// single post-mutation hook: every queue change funnels through here, so the
+// session snapshot stays in sync with one call site.
 const refreshQueuePositions = async () => {
+  persistQueue();
   for (let i = 0; i < pending.length; i++) {
     const job = pending[i];
     await updateProgress(
@@ -39,6 +97,7 @@ const refreshQueuePositions = async () => {
 };
 
 const drain = async (): Promise<void> => {
+  updateKeepalive();
   if (!runner) return;
   const concurrency = await readConcurrency();
   while (running.size < concurrency && pending.length > 0) {
@@ -77,6 +136,7 @@ const cancelQueued = async (key: string): Promise<boolean> => {
   pending.splice(idx, 1);
   await clearProgress(key);
   await refreshQueuePositions();
+  updateKeepalive();
   return true;
 };
 
@@ -92,6 +152,10 @@ const reorderQueueItem = async (key: string, direction: 'up' | 'down'): Promise<
 
 const setQueueRunner = (fn: Runner) => {
   runner = fn;
+  // The SW just (re)started — restore any jobs a previous worker instance
+  // left queued. Runs here (not at module eval) so the runner is guaranteed
+  // to exist by the time drain() fires for the restored jobs.
+  void rehydrateQueue();
 };
 
 // Diagnostics — used by tests and surfaceable in a future "queue depth" badge.
