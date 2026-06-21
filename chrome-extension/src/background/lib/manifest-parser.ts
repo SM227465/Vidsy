@@ -70,41 +70,49 @@ export const parseHlsVariants = async (manifestUrl: string): Promise<ManifestPar
 
 export const parseDashVariants = async (manifestUrl: string): Promise<ManifestParseResult> => {
   try {
-    const res = await fetch(manifestUrl);
+    // credentials:'include' so cookie-gated MPDs resolve; the SW's host
+    // permissions bypass CORS, and signed MPD URLs (e.g. VK's ?expires=…&srcIp=…)
+    // self-authorize without a Referer.
+    const res = await fetch(manifestUrl, { credentials: 'include' });
     if (!res.ok) return { variants: [], isDrmProtected: false };
     const xml = await res.text();
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(xml, 'application/xml');
 
-    // Any ContentProtection element means the content is encrypted. Even the
-    // generic CENC marker (urn:mpeg:dash:mp4protection:2011) alone implies
-    // AES-CTR with a key obtained out-of-band (browser EME) — we have no
-    // pathway to that key, so the resulting download would be corrupt.
-    const contentProtections = Array.from(doc.querySelectorAll('ContentProtection'));
-    const isDrmProtected = contentProtections.some(el => Boolean(el.getAttribute('schemeIdUri')));
+    // The background is a service worker — no DOMParser — so the MPD is parsed
+    // with regex. Any ContentProtection element means EME-gated keys we can't
+    // obtain (even the generic CENC marker), so the download would be corrupt.
+    const isDrmProtected = /<ContentProtection\b[^>]*\bschemeIdUri=/i.test(xml);
 
-    const reps = Array.from(doc.querySelectorAll('Representation'));
-    const variants = reps
-      .map(rep => {
-        const bandwidth = rep.getAttribute('bandwidth');
-        const width = rep.getAttribute('width');
-        const height = rep.getAttribute('height');
-        const codecs = rep.getAttribute('codecs') ?? undefined;
-        const baseUrl = rep.querySelector('BaseURL')?.textContent?.trim();
-        if (!baseUrl) return undefined;
-        const absoluteUrl = new URL(baseUrl, manifestUrl).toString();
-        return {
-          url: absoluteUrl,
-          bandwidth: bandwidth ? Number(bandwidth) : undefined,
-          resolution: width && height ? { width: Number(width), height: Number(height) } : undefined,
-          codecs,
-          name: rep.getAttribute('id') ?? undefined,
-          isDrmProtected: isDrmProtected || undefined,
-        } as MediaVariant;
-      })
-      .filter((v): v is MediaVariant => Boolean(v));
+    const attrOf = (tag: string, name: string): string | undefined => {
+      const m = new RegExp(`\\b${name}="([^"]*)"`).exec(tag);
+      return m ? m[1] : undefined;
+    };
 
-    return { variants, isDrmProtected };
+    // One selectable entry per VIDEO resolution. Each points back at the MPD with
+    // an `#h=<height>` marker that the DASH downloader reads to pick that exact
+    // Representation (and still muxes the separate audio track). Reps without a
+    // height are audio-only and skipped; duplicate heights keep the highest
+    // bitrate (e.g. when a site ships both AV1 and VP9 at 1080p).
+    const byHeight = new Map<number, MediaVariant>();
+    for (const m of xml.matchAll(/<Representation\b([^>]*)>/gi)) {
+      const tag = m[1];
+      const height = Number(attrOf(tag, 'height') ?? '0');
+      if (!height) continue;
+      const width = Number(attrOf(tag, 'width') ?? '0');
+      const bwRaw = attrOf(tag, 'bandwidth');
+      const bandwidth = bwRaw ? Number(bwRaw) : undefined;
+      const existing = byHeight.get(height);
+      if (existing && (existing.bandwidth ?? 0) >= (bandwidth ?? 0)) continue;
+      byHeight.set(height, {
+        url: `${manifestUrl}#h=${height}`,
+        name: `${height}p`,
+        bandwidth,
+        resolution: width ? { width, height } : undefined,
+        codecs: attrOf(tag, 'codecs'),
+        isDrmProtected: isDrmProtected || undefined,
+      });
+    }
+
+    return { variants: Array.from(byHeight.values()), isDrmProtected };
   } catch (error) {
     console.debug('parseDashVariants failed', error);
     return { variants: [], isDrmProtected: false };

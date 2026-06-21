@@ -184,6 +184,13 @@ export const MEDIA_MESSAGE = {
   RECORD_STOP: 'media/record-stop',
   RECORD_PAUSE: 'media/record-pause',
   RECORD_RESUME: 'media/record-resume',
+  // Content scripts read chrome.storage.session staler than extension pages, so
+  // the content-UI pill pulls the authoritative download progress from the
+  // background (which owns the writes) instead of reading storage directly.
+  GET_DOWNLOADS: 'media/get-downloads',
+  // SPA players (VK) don't expose the video title via <title>/og:title — the site
+  // extractor relays the player's own title so network detections get a name.
+  TITLE_HINT: 'media/title-hint',
 } as const;
 
 export type MediaMessage =
@@ -246,6 +253,8 @@ export type MediaMessage =
     }
   | { type: typeof MEDIA_MESSAGE.RECORD_STOP; payload: { key: string; fileName?: string; discard?: boolean } }
   | { type: typeof MEDIA_MESSAGE.RECORD_PAUSE; payload: { key: string } }
-  | { type: typeof MEDIA_MESSAGE.RECORD_RESUME; payload: { key: string } };
+  | { type: typeof MEDIA_MESSAGE.RECORD_RESUME; payload: { key: string } }
+  | { type: typeof MEDIA_MESSAGE.GET_DOWNLOADS }
+  | { type: typeof MEDIA_MESSAGE.TITLE_HINT; payload: { title: string } };
 
 export type PasteUrlResult = { ok: true; kind: MediaKind } | { ok: false; error: string };

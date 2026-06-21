@@ -395,9 +395,11 @@ const runDownloadJob = async (payload: DownloadPayload) => {
   let usedHttpRange = false;
   try {
     const outputFormat = payload.outputFormat ?? 'mp4';
-    // HLS must always be muxed — direct download saves the m3u8 playlist as HTML
+    // HLS/DASH must always be muxed — a direct download would just save the
+    // .m3u8/.mpd manifest, not the media. (DASH used to be gated behind
+    // enableHlsMerging, which left sites like VK saving a useless manifest.)
     const shouldMergeHls = isHlsKind(payload.kind, payload.url);
-    const shouldMergeDash = isDashKind(payload.kind, payload.url) && settings.enableHlsMerging;
+    const shouldMergeDash = isDashKind(payload.kind, payload.url);
     const shouldMergeAV = !!payload.audioUrl && !shouldMergeHls && !shouldMergeDash;
     usedHttpRange = !shouldMergeHls && !shouldMergeDash && !shouldMergeAV;
 

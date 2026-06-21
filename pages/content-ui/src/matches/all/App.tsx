@@ -9,6 +9,26 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { VideoEntry } from './lib/media-helpers';
 import type { MediaDownloadProgress, MediaItem } from '@extension/shared';
 
+// Collect <video> elements, piercing open shadow roots. Some players (VK) mount
+// their <video> inside a web component, where document.querySelectorAll('video')
+// can't reach it. Light DOM is the fast path; only walk shadow roots when the
+// light DOM has none, to keep ordinary pages cheap.
+const collectVideos = (): HTMLVideoElement[] => {
+  const light = Array.from(document.querySelectorAll<HTMLVideoElement>('video'));
+  if (light.length > 0) return light;
+  const out: HTMLVideoElement[] = [];
+  const walk = (root: Document | ShadowRoot) => {
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>('*'))) {
+      if (el.shadowRoot) {
+        out.push(...Array.from(el.shadowRoot.querySelectorAll<HTMLVideoElement>('video')));
+        walk(el.shadowRoot);
+      }
+    }
+  };
+  walk(document);
+  return out;
+};
+
 const App = () => {
   const detections = useStorage(mediaDetectionsStorage);
   const rawDownloads = useStorage(mediaDownloadsStorage);
@@ -17,10 +37,22 @@ const App = () => {
   // updates fine). `polled` is refreshed by a direct session read while a job is
   // active (see effect below) and takes precedence so the pill stays live.
   const [polled, setPolled] = useState<Record<string, MediaDownloadProgress> | null>(null);
-  const downloads = useMemo(
-    () => (polled ?? rawDownloads ?? {}) as Record<string, MediaDownloadProgress>,
-    [polled, rawDownloads],
-  );
+  // Neither source is authoritative on its own: `rawDownloads` (onChanged) can
+  // freeze, and `polled` lags by its interval — which is very visible now that
+  // range-parallel downloads finish in seconds (the pill showed a stale % while
+  // the live side panel was far ahead). Merge per key, preferring whichever
+  // snapshot was written most recently (updatedAt).
+  const downloads = useMemo(() => {
+    const a = (polled ?? {}) as Record<string, MediaDownloadProgress>;
+    const b = (rawDownloads ?? {}) as Record<string, MediaDownloadProgress>;
+    const out: Record<string, MediaDownloadProgress> = { ...b, ...a };
+    for (const k of Object.keys(out)) {
+      const pa = a[k];
+      const pb = b[k];
+      if (pa && pb) out[k] = (pb.updatedAt ?? 0) > (pa.updatedAt ?? 0) ? pb : pa;
+    }
+    return out;
+  }, [polled, rawDownloads]);
   const settings = useStorage(mediaSettingsStorage);
 
   /* tab ID via background message (chrome.tabs not available in content scripts) */
@@ -54,7 +86,7 @@ const App = () => {
       rAF = requestAnimationFrame(() => {
         rAF = null;
         setVideos(
-          Array.from(document.querySelectorAll<HTMLVideoElement>('video'))
+          collectVideos()
             .filter(el => el.offsetWidth > 100 && el.offsetHeight > 60)
             .map(el => ({ el, id: getId(el), rect: el.getBoundingClientRect() })),
         );
@@ -253,14 +285,17 @@ const App = () => {
     let cancelled = false;
     const poll = async () => {
       try {
-        const v = await chrome.storage.session.get('media-downloads');
-        if (!cancelled) setPolled((v?.['media-downloads'] ?? {}) as Record<string, MediaDownloadProgress>);
+        // Pull from the background (authoritative, fresh) rather than reading
+        // chrome.storage.session directly — content scripts see session writes
+        // staler than extension pages, which made the pill % lag the side panel.
+        const res = await chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.GET_DOWNLOADS });
+        if (!cancelled && res?.ok) setPolled((res.downloads ?? {}) as Record<string, MediaDownloadProgress>);
       } catch {
-        /* ignore */
+        /* background asleep / no receiver — keep last value */
       }
     };
     void poll();
-    const t = setInterval(poll, 700);
+    const t = setInterval(poll, 350);
     return () => {
       cancelled = true;
       clearInterval(t);
@@ -299,9 +334,11 @@ const App = () => {
     prevVideoRef.current = effectiveVideo;
   }
 
-  if (!effectiveVideo) return interceptModal;
-
-  const vr = effectiveVideo.rect;
+  // Anchor the pill to the page <video> when we can find one; otherwise pin it
+  // to the top-right corner so it still appears on players we can't anchor to
+  // (canvas / shadow-DOM / iframe players like VK). Previously we hid the pill
+  // entirely when no <video> was found, which is why VK showed no download pill.
+  const vr = effectiveVideo?.rect;
   const right = vr ? window.innerWidth - vr.right + 8 : 12;
   const top = vr ? vr.top + 8 : 12;
 

@@ -100,6 +100,10 @@ export const isDashSegment = (url: string, mime?: string) => {
   const ext = getPathExtension(url);
   const lowerUrl = url.toLowerCase();
   const lowerMime = mime?.toLowerCase() ?? '';
+  // A manifest (declared by its own mime) is never a segment, even when its URL
+  // lives under a /cmaf/ or /dash/ path. VK live serves application/dash+xml at
+  // .../cmaf/<id>/.../get, which the /cmaf/ rule below would otherwise eat.
+  if (lowerMime.includes('dash+xml') || lowerMime.includes('mpegurl')) return false;
   if (ext === '.m4s' || ext === '.cmfv' || ext === '.cmfa' || ext === '.m4v' || ext === '.m4a') return true;
   // 'range/' must be its own path segment — a bare substring test matched
   // hosts/paths like "/orange/video.mp4" and suppressed real detections.

@@ -1,6 +1,12 @@
 /// <reference types="vite/client" />
 import 'webextension-polyfill';
-import { handleNetworkDetection, upsertDetection, clearTabDetections, setMainVideoPresent } from './lib/detection';
+import {
+  handleNetworkDetection,
+  upsertDetection,
+  clearTabDetections,
+  setMainVideoPresent,
+  setTabTitleHint,
+} from './lib/detection';
 import {
   handleDownload,
   pauseDownload,
@@ -17,6 +23,7 @@ import { deriveKind, deriveFileName } from './lib/media-utils';
 import { classifyAndAddUrl } from './lib/paste-url';
 import { updateProgress, clearProgress, clearTerminalProgress } from './lib/progress';
 import { MEDIA_MESSAGE } from '@extension/shared';
+import { mediaDownloadsStorage } from '@extension/storage';
 import type { MediaMessage } from '@extension/shared';
 
 // ─── Header capture & stale DNR cleanup ───
@@ -50,7 +57,6 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
       return;
     }
     if (message.type === 'offscreen/log') {
-      // eslint-disable-next-line no-console
       console.log('[OFFSCREEN]', message.payload?.msg, message.payload?.data ?? '');
       sendResponse({ ok: true });
       return;
@@ -102,6 +108,12 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
       sendResponse({ ok: true });
       return;
     }
+    if (msg.type === MEDIA_MESSAGE.GET_DOWNLOADS) {
+      // The background owns the progress writes, so its storage read is fresh —
+      // the content-UI pill polls this because its own session reads lag behind.
+      sendResponse({ ok: true, downloads: await mediaDownloadsStorage.get() });
+      return;
+    }
     if (msg.type === MEDIA_MESSAGE.CLEAR_TAB) {
       const tabId = msg.payload?.tabId ?? sender.tab?.id;
       if (tabId !== undefined) await clearTabDetections(tabId);
@@ -148,6 +160,12 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
     if (msg.type === MEDIA_MESSAGE.MAIN_VIDEO_PRESENT) {
       const tabId = sender.tab?.id;
       if (tabId !== undefined) setMainVideoPresent(tabId, msg.payload.present);
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.TITLE_HINT) {
+      const tabId = sender.tab?.id;
+      if (tabId !== undefined) setTabTitleHint(tabId, msg.payload.title);
       sendResponse({ ok: true });
       return;
     }
