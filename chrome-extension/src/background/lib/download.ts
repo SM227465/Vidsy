@@ -656,9 +656,12 @@ export const startRecording = async (payload: DownloadPayload) => {
   }
 
   await ensureOffscreen();
+  // VK and other live streams are DASH (dynamic MPD, separate audio+video CMAF);
+  // route those to the DASH-live recorder. Everything else is HLS-live.
+  const recKind = payload.kind === 'dash' ? 'dash-live' : 'hls-live';
   const res = await sendMessageWithRetry({
     type: 'offscreen/download-blob',
-    payload: { kind: 'hls-live', url: payload.url, fileName, output: outputFormat, key, headers },
+    payload: { kind: recKind, url: payload.url, fileName, output: outputFormat, key, headers },
   });
   if (!res?.ok) {
     await removeHeadersForDownload(key);

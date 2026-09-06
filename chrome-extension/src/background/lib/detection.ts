@@ -10,6 +10,7 @@ import {
   normalizeMediaUrl,
   MIN_MEDIA_SIZE_BYTES,
 } from './media-utils';
+import { MEDIA_MESSAGE } from '@extension/shared';
 import { mediaDetectionsStorage } from '@extension/storage';
 import type { MediaItem, MediaVariant } from '@extension/shared';
 
@@ -440,6 +441,13 @@ const flushTabItems = async (tabKey: string) => {
   tabWriteTimers.delete(tabKey);
   const state = await mediaDetectionsStorage.get();
   await mediaDetectionsStorage.set({ ...state, [tabKey]: items });
+  // Push straight to the tab — content scripts get storage.onChanged unreliably,
+  // so this is what makes the content-UI pill appear when a detection lands after
+  // the pill mounted (e.g. a live stream whose manifest is fetched post-load).
+  const tabId = Number(tabKey);
+  if (Number.isFinite(tabId) && tabId >= 0) {
+    chrome.tabs.sendMessage(tabId, { type: MEDIA_MESSAGE.DETECTIONS_PUSH, payload: { items } }).catch(() => undefined);
+  }
 };
 
 const scheduleTabWrite = (tabKey: string) => {
@@ -1017,6 +1025,7 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
 
   let variants: MediaVariant[] | undefined;
   let isDrmProtected = false;
+  let isLiveItem = false;
   if (kind === 'hls') {
     const parsed = await parseHlsVariants(url);
     variants = parsed.variants;
@@ -1051,6 +1060,7 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
     const parsed = await parseDashVariants(url);
     variants = parsed.variants;
     isDrmProtected = parsed.isDrmProtected;
+    if (parsed.isLive) isLiveItem = true;
     if (variants && variants.length > 1) {
       variants = variants.slice().sort((a, b) => {
         const aRes = a.resolution?.height ?? 0;
@@ -1089,6 +1099,7 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
       kind,
       variants,
       isDrmProtected: isDrmProtected || undefined,
+      isLive: isLiveItem || undefined,
       title: pageTitle,
     },
     tabId,

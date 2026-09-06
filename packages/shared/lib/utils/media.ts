@@ -191,6 +191,10 @@ export const MEDIA_MESSAGE = {
   // SPA players (VK) don't expose the video title via <title>/og:title — the site
   // extractor relays the player's own title so network detections get a name.
   TITLE_HINT: 'media/title-hint',
+  // Background → content script: push a tab's detection list directly. Content
+  // scripts receive storage.onChanged unreliably, so the content-UI pill can
+  // miss a detection that lands after it mounted (e.g. a live stream's manifest).
+  DETECTIONS_PUSH: 'media/detections-push',
 } as const;
 
 export type MediaMessage =
@@ -255,6 +259,7 @@ export type MediaMessage =
   | { type: typeof MEDIA_MESSAGE.RECORD_PAUSE; payload: { key: string } }
   | { type: typeof MEDIA_MESSAGE.RECORD_RESUME; payload: { key: string } }
   | { type: typeof MEDIA_MESSAGE.GET_DOWNLOADS }
-  | { type: typeof MEDIA_MESSAGE.TITLE_HINT; payload: { title: string } };
+  | { type: typeof MEDIA_MESSAGE.TITLE_HINT; payload: { title: string } }
+  | { type: typeof MEDIA_MESSAGE.DETECTIONS_PUSH; payload: { items: MediaItem[] } };
 
 export type PasteUrlResult = { ok: true; kind: MediaKind } | { ok: false; error: string };

@@ -66,10 +66,15 @@ const App = () => {
       .catch(() => {});
   }, []);
 
+  // Detections pushed straight from the background (reliable; storage.onChanged
+  // is flaky in content scripts) take precedence over the useStorage snapshot —
+  // this is what makes the pill appear when a detection lands after mount (live).
+  const [pushedItems, setPushedItems] = useState<MediaItem[] | null>(null);
   const tabItems = useMemo<MediaItem[]>(() => {
+    if (pushedItems) return pushedItems;
     if (!detections || tabId === null) return [];
     return detections[String(tabId)] ?? [];
-  }, [detections, tabId]);
+  }, [pushedItems, detections, tabId]);
 
   /* video element tracking */
   const [videos, setVideos] = useState<VideoEntry[]>([]);
@@ -135,6 +140,8 @@ const App = () => {
     const handler = (message: { type?: string; payload?: unknown }) => {
       if (message?.type === MEDIA_MESSAGE.INTERCEPT_SHOW) {
         setIntercept(message.payload as typeof intercept);
+      } else if (message?.type === MEDIA_MESSAGE.DETECTIONS_PUSH) {
+        setPushedItems((message.payload as { items: MediaItem[] }).items ?? []);
       }
     };
     chrome.runtime.onMessage.addListener(handler);

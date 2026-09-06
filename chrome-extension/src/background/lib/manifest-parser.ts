@@ -4,6 +4,8 @@ import type { MediaVariant } from '@extension/shared';
 type ManifestParseResult = {
   variants: MediaVariant[];
   isDrmProtected: boolean;
+  // True for a live DASH MPD (type="dynamic"). HLS liveness is probed separately.
+  isLive?: boolean;
 };
 
 // HLS `METHOD=AES-128` is standard HTTP-delivered envelope encryption — the
@@ -81,6 +83,8 @@ export const parseDashVariants = async (manifestUrl: string): Promise<ManifestPa
     // with regex. Any ContentProtection element means EME-gated keys we can't
     // obtain (even the generic CENC marker), so the download would be corrupt.
     const isDrmProtected = /<ContentProtection\b[^>]*\bschemeIdUri=/i.test(xml);
+    // A live stream (vs VOD) — drives Record instead of Download in the UI.
+    const isLive = /<MPD\b[^>]*\btype\s*=\s*["']?dynamic/i.test(xml);
 
     const attrOf = (tag: string, name: string): string | undefined => {
       const m = new RegExp(`\\b${name}="([^"]*)"`).exec(tag);
@@ -112,7 +116,7 @@ export const parseDashVariants = async (manifestUrl: string): Promise<ManifestPa
       });
     }
 
-    return { variants: Array.from(byHeight.values()), isDrmProtected };
+    return { variants: Array.from(byHeight.values()), isDrmProtected, isLive };
   } catch (error) {
     console.debug('parseDashVariants failed', error);
     return { variants: [], isDrmProtected: false };

@@ -449,3 +449,6 @@ export const downloadDashMuxed = async (
     }
   }
 };
+
+// Reused by the DASH-live recorder (poll the dynamic MPD each tick).
+export { fetchMpdText, parseDashSegments };
