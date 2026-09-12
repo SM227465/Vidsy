@@ -31,6 +31,10 @@ const iconBtn: CSSProperties = {
   padding: '5px 9px',
 };
 
+// Progress readout next to the stage label — never shrinks, so the pill grows to
+// fit rather than clipping the text.
+const progNum: CSSProperties = { color: MUTED, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0 };
+
 const divider: CSSProperties = { width: 1, background: GLASS_BORDER, alignSelf: 'stretch', flexShrink: 0 };
 
 const hoverIn = (e: MouseEvent) => ((e.currentTarget as HTMLElement).style.background = HOVER);
@@ -224,12 +228,16 @@ export const PillBar = ({
 
         {/* Label with percentage */}
         {isBusy ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ color: TEXT }}>{stageShort[prog?.stage ?? ''] ?? prog?.stage ?? 'Downloading'}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+            <span style={{ color: TEXT, whiteSpace: 'nowrap', flexShrink: 0 }}>
+              {stageShort[prog?.stage ?? ''] ?? prog?.stage ?? 'Downloading'}
+            </span>
             {pct !== null ? (
-              <span style={{ color: MUTED, fontSize: 11, fontWeight: 600 }}>{pct}%</span>
+              <span style={{ ...progNum, fontVariantNumeric: 'tabular-nums' }}>{pct}%</span>
             ) : prog?.downloadedBytes ? (
-              <span style={{ color: MUTED, fontSize: 11, fontWeight: 600 }}>{formatBytes(prog.downloadedBytes)}</span>
+              <span style={{ ...progNum, fontVariantNumeric: 'tabular-nums' }}>
+                {formatBytes(prog.downloadedBytes)}
+              </span>
             ) : null}
           </div>
         ) : (

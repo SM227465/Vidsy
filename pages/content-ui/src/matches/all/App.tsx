@@ -2,7 +2,7 @@ import { DropdownPanel } from './components/DropdownPanel';
 import { InterceptModal } from './components/InterceptModal';
 import { PillBar } from './components/PillBar';
 import { FONT } from './components/tokens';
-import { ACTIVE_STAGES, pickBestVariant, qLabel, buildRows } from './lib/media-helpers';
+import { ACTIVE_STAGES, pickActiveEntry, pickBestVariant, qLabel, buildRows } from './lib/media-helpers';
 import { MEDIA_MESSAGE, useStorage } from '@extension/shared';
 import { mediaDetectionsStorage, mediaDownloadsStorage, mediaSettingsStorage } from '@extension/storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -13,10 +13,15 @@ import type { MediaDownloadProgress, MediaItem } from '@extension/shared';
 // their <video> inside a web component, where document.querySelectorAll('video')
 // can't reach it. Light DOM is the fast path; only walk shadow roots when the
 // light DOM has none, to keep ordinary pages cheap.
-const collectVideos = (): HTMLVideoElement[] => {
+// Smallest box we'll treat as a player when falling back to iframes — keeps the
+// pill off tracking pixels, ad slots and social buttons.
+const MIN_IFRAME_W = 280;
+const MIN_IFRAME_H = 160;
+
+const collectVideos = (): HTMLElement[] => {
   const light = Array.from(document.querySelectorAll<HTMLVideoElement>('video'));
   if (light.length > 0) return light;
-  const out: HTMLVideoElement[] = [];
+  const out: HTMLElement[] = [];
   const walk = (root: Document | ShadowRoot) => {
     for (const el of Array.from(root.querySelectorAll<HTMLElement>('*'))) {
       if (el.shadowRoot) {
@@ -26,7 +31,14 @@ const collectVideos = (): HTMLVideoElement[] => {
     }
   };
   walk(document);
-  return out;
+  if (out.length > 0) return out;
+  // Last resort: the player is in a cross-origin iframe (VK), so this frame can
+  // never see its <video>. Anchor to the iframe box itself — otherwise the pill
+  // falls back to the viewport corner, far from the video the user is looking at.
+  return Array.from(document.querySelectorAll<HTMLIFrameElement>('iframe')).filter(f => {
+    const r = f.getBoundingClientRect();
+    return r.width >= MIN_IFRAME_W && r.height >= MIN_IFRAME_H;
+  });
 };
 
 const App = () => {
@@ -80,8 +92,8 @@ const App = () => {
   const [videos, setVideos] = useState<VideoEntry[]>([]);
   useEffect(() => {
     let n = 0;
-    const ids = new WeakMap<HTMLVideoElement, string>();
-    const getId = (el: HTMLVideoElement) => {
+    const ids = new WeakMap<HTMLElement, string>();
+    const getId = (el: HTMLElement) => {
       if (!ids.has(el)) ids.set(el, `v${n++}`);
       return ids.get(el)!;
     };
@@ -253,7 +265,7 @@ const App = () => {
   /* Recover active download after page refresh */
   useEffect(() => {
     if (busyUrl) return; // already tracking something
-    const activeEntry = Object.entries(downloads).find(([, p]) => ACTIVE_STAGES.has(p.stage));
+    const activeEntry = pickActiveEntry(downloads);
     if (activeEntry) setBusyUrl(activeEntry[0]);
     // Only run on first mount (when downloads first becomes available)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -315,12 +327,15 @@ const App = () => {
 
   /* active progress */
   const primary = tabItems[0];
+  // Never pick by "first item that looks active" — an orphaned row (SW died
+  // mid-download) stays at an active stage forever and would capture the pill,
+  // freezing it at a stale percentage while the real job ran on under another key.
+  const freshestActive = pickActiveEntry(downloads);
   const activeItem = busyUrl
     ? tabItems.find(it => it.url === busyUrl)
-    : tabItems.find(it => {
-        const p = downloads[it.url];
-        return p != null && ACTIVE_STAGES.has(p.stage);
-      });
+    : freshestActive
+      ? tabItems.find(it => it.url === freshestActive[0])
+      : undefined;
   const isBusy = !!activeItem;
 
   /* positioning */
@@ -363,13 +378,15 @@ const App = () => {
       ? Math.min(100, Math.round((prog.downloadedBytes / prog.estimatedBytes) * 100))
       : null;
 
+  // No trailing ellipsis: the pill is narrow and a '…' right before the percentage
+  // reads as clipped text ("Download… 11%") rather than as an in-progress hint.
   const stageShort: Record<string, string> = {
-    init: 'Downloading…',
-    'fetch-manifest': 'Downloading…',
-    'download-video': 'Downloading…',
-    'download-audio': 'Downloading…',
-    mux: 'Processing…',
-    finalize: 'Saving…',
+    init: 'Downloading',
+    'fetch-manifest': 'Downloading',
+    'download-video': 'Downloading',
+    'download-audio': 'Downloading',
+    mux: 'Processing',
+    finalize: 'Saving',
     success: '✓ Done',
     failed: '✗ Failed',
   };

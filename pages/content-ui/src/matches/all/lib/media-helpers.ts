@@ -8,7 +8,17 @@ type Row = { label: string; sub: string; item: MediaItem; variantUrl?: string };
 
 const topLevelQuality = (item: MediaItem): string => (item.resolution ? shortEdgeLabel(item.resolution) : '');
 
-export type VideoEntry = { el: HTMLVideoElement; id: string; rect: DOMRect };
+// A live job rewrites its progress entry constantly, so an entry that hasn't been
+// touched in this long is orphaned — e.g. the SW died mid-download, leaving a row
+// frozen at an active stage. The pill used to latch onto the FIRST such row and
+// then sit at its stale percentage forever while the real download ran on under a
+// different key (the side panel, reading the same storage, showed the true value).
+const STALE_ACTIVE_MS = 45_000;
+
+// `el` is only ever used as a stable identity key (WeakMap) and for its rect, so
+// it is widened past HTMLVideoElement: on sites whose player lives in an iframe
+// (VK) the anchor we track is the <iframe>, not a <video> we can never reach.
+export type VideoEntry = { el: HTMLElement; id: string; rect: DOMRect };
 
 export const ACTIVE_STAGES = new Set([
   'init',
@@ -20,6 +30,22 @@ export const ACTIVE_STAGES = new Set([
   'mux',
   'finalize',
 ]);
+
+/** Freshest active download, or null. Prefers the most recently updated entry and
+ *  skips stalled ones, so an orphaned row can never capture the pill. */
+export const pickActiveEntry = <T extends { stage: string; updatedAt?: number }>(
+  downloads: Record<string, T>,
+  now: number = Date.now(),
+): [string, T] | null => {
+  const live = Object.entries(downloads).filter(
+    ([, p]) => ACTIVE_STAGES.has(p.stage) && now - (p.updatedAt ?? 0) < STALE_ACTIVE_MS,
+  );
+  // Fall back to any active entry if every one looks stalled, so a genuinely slow
+  // stage still shows something rather than the pill blanking out.
+  const pool = live.length > 0 ? live : Object.entries(downloads).filter(([, p]) => ACTIVE_STAGES.has(p.stage));
+  if (pool.length === 0) return null;
+  return pool.reduce((best, cur) => ((cur[1].updatedAt ?? 0) > (best[1].updatedAt ?? 0) ? cur : best));
+};
 
 export const pickBestVariant = (vs: MediaVariant[]): MediaVariant | undefined =>
   vs.reduce<MediaVariant | undefined>((b, c) => {
