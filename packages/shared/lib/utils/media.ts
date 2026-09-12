@@ -191,6 +191,10 @@ export const MEDIA_MESSAGE = {
   // SPA players (VK) don't expose the video title via <title>/og:title — the site
   // extractor relays the player's own title so network detections get a name.
   TITLE_HINT: 'media/title-hint',
+  // Content script → background: titles keyed by a substring of the media URL
+  // (e.g. a Reddit v.redd.it id). A per-tab TITLE_HINT can't name anything on a
+  // FEED, where one tab holds many videos — this maps each one to its own post.
+  TITLE_MAP: 'media/title-map',
   // Background → content script: push a tab's detection list directly. Content
   // scripts receive storage.onChanged unreliably, so the content-UI pill can
   // miss a detection that lands after it mounted (e.g. a live stream's manifest).
@@ -260,6 +264,7 @@ export type MediaMessage =
   | { type: typeof MEDIA_MESSAGE.RECORD_RESUME; payload: { key: string } }
   | { type: typeof MEDIA_MESSAGE.GET_DOWNLOADS }
   | { type: typeof MEDIA_MESSAGE.TITLE_HINT; payload: { title: string } }
+  | { type: typeof MEDIA_MESSAGE.TITLE_MAP; payload: { entries: { match: string; title: string }[] } }
   | { type: typeof MEDIA_MESSAGE.DETECTIONS_PUSH; payload: { items: MediaItem[] } };
 
 export type PasteUrlResult = { ok: true; kind: MediaKind } | { ok: false; error: string };

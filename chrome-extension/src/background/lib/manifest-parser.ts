@@ -24,7 +24,11 @@ export const parseHlsVariants = async (manifestUrl: string): Promise<ManifestPar
     if (!res.ok) return { variants: [], isDrmProtected: false };
     const text = await res.text();
     const lines = text.split('\n');
+    // Variants that carry no RESOLUTION (rare: audio-only renditions) keep their
+    // direct URL since there is no height to select by; everything else is
+    // deduped per height in byHeight.
     const variants: MediaVariant[] = [];
+    const byHeight = new Map<number, MediaVariant>();
     let isDrmProtected = false;
 
     for (let i = 0; i < lines.length; i++) {
@@ -50,20 +54,37 @@ export const parseHlsVariants = async (manifestUrl: string): Promise<ManifestPar
       const name = attrs['NAME'] ?? undefined;
       const codecs = attrs['CODECS'] ?? undefined;
 
-      variants.push({
-        url: variantUrl,
+      const hasRes = Number.isFinite(width) && Number.isFinite(height);
+      const variant: MediaVariant = {
+        // Point at the MASTER plus the chosen height (the DASH `mpd#h=` pattern)
+        // rather than at the variant playlist. #EXT-X-MEDIA audio groups exist
+        // ONLY in the master, so handing the downloader a bare variant URL loses
+        // the audio rendition and silently produces a video-only file.
+        url: hasRes ? `${manifestUrl}#h=${height}` : variantUrl,
         bandwidth: Number.isFinite(bandwidth) ? bandwidth : undefined,
-        resolution: Number.isFinite(width) && Number.isFinite(height) ? { width, height } : undefined,
+        resolution: hasRes ? { width, height } : undefined,
         name,
         codecs,
-      });
+      };
+
+      if (!hasRes) {
+        variants.push(variant);
+        continue;
+      }
+      // Masters routinely list the same resolution several times (Reddit ships
+      // each twice, differing only in BANDWIDTH), which would show the user 8
+      // rows for 4 real choices. Keep one entry per height — the richest one.
+      const existing = byHeight.get(height);
+      if (!existing || (variant.bandwidth ?? 0) > (existing.bandwidth ?? 0)) byHeight.set(height, variant);
     }
+
+    const allVariants = [...variants, ...byHeight.values()];
 
     if (isDrmProtected) {
-      for (const v of variants) v.isDrmProtected = true;
+      for (const v of allVariants) v.isDrmProtected = true;
     }
 
-    return { variants, isDrmProtected };
+    return { variants: allVariants, isDrmProtected };
   } catch (error) {
     console.debug('parseHlsVariants failed', error);
     return { variants: [], isDrmProtected: false };

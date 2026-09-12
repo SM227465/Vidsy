@@ -6,6 +6,7 @@ import {
   clearTabDetections,
   setMainVideoPresent,
   setTabTitleHint,
+  setTabTitleMap,
 } from './lib/detection';
 import {
   handleDownload,
@@ -166,6 +167,12 @@ chrome.runtime.onMessage.addListener((message: any, sender, sendResponse) => {
     if (msg.type === MEDIA_MESSAGE.TITLE_HINT) {
       const tabId = sender.tab?.id;
       if (tabId !== undefined) setTabTitleHint(tabId, msg.payload.title);
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === MEDIA_MESSAGE.TITLE_MAP) {
+      const tabId = sender.tab?.id;
+      if (tabId !== undefined) setTabTitleMap(tabId, msg.payload.entries ?? []);
       sendResponse({ ok: true });
       return;
     }

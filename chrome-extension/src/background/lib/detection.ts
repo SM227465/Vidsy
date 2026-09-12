@@ -478,9 +478,27 @@ const setTabItems = (tabKey: string, items: MediaItem[]) => {
 // it takes precedence over the host/tab-title fallback for that tab's items.
 const tabTitleHints = new Map<number, string>();
 
+// Per-tab map of "URL substring → title". A feed (Reddit) holds many videos in
+// ONE tab, so a single tabTitleHint can only ever name one of them; the content
+// script pairs each post's title with an id that appears in that post's media
+// URL, and the detection matches on it. Checked BEFORE the per-tab hint.
+const tabTitleMaps = new Map<number, Map<string, string>>();
+
+const titleFromMap = (url: string, tabId?: number): string | undefined => {
+  if (tabId === undefined) return undefined;
+  const map = tabTitleMaps.get(tabId);
+  if (!map) return undefined;
+  for (const [match, title] of map) {
+    if (url.includes(match)) return title;
+  }
+  return undefined;
+};
+
 const normalizeDetection = (candidate: Partial<MediaItem>, tabId?: number, pageUrl?: string): MediaItem => {
   const kind = candidate.kind ?? deriveKind(candidate.url!, candidate.mimeType);
-  const titleHint = tabId !== undefined ? tabTitleHints.get(tabId) : undefined;
+  // Per-URL match wins over the per-tab hint: on a feed it is the only one that
+  // can tell two videos in the same tab apart.
+  const titleHint = titleFromMap(candidate.url!, tabId) ?? (tabId !== undefined ? tabTitleHints.get(tabId) : undefined);
   return {
     id: candidate.id ?? createId(),
     url: candidate.url!,
@@ -514,10 +532,17 @@ const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: number, pa
 const doUpsertDetection = async (candidate: Partial<MediaItem>, tabId?: number, pageUrl?: string) => {
   if (!candidate.url) return;
 
-  // VK VOD serves a VIDEO-ONLY HLS master (audio is a separate EXT-X-MEDIA group
-  // we don't merge) alongside a complete DASH manifest, so drop that soundless
-  // HLS and let the user pick the DASH (which muxes audio). A LIVE VK stream,
-  // however, has ONLY HLS — keep it and mark it live so the pill offers Record.
+  // VK VOD serves an HLS master alongside a complete DASH manifest; we drop the
+  // HLS so one video yields one row, and the DASH is the better source (it
+  // already drives the resolution picker). A LIVE VK stream has ONLY HLS — keep
+  // it and mark it live so the pill offers Record.
+  //
+  // NOTE (2026-09-12): the ORIGINAL reason was that VK's HLS is video-only, with
+  // audio in a separate #EXT-X-MEDIA group we could not merge. That limitation
+  // is GONE — hls-download.ts now fetches the audio rendition and muxes it. This
+  // suppression is therefore de-duplication only, and could be lifted if VK's
+  // DASH ever proves unreliable (e.g. a DRM-flagged MPD would leave the user
+  // with an undownloadable row and no HLS fallback).
   if (candidate.kind === 'hls' && /(^|\.)vkuser\.net$/i.test(hostOf(candidate.url) ?? '')) {
     if (await hlsPlaylistIsLive(candidate.url)) {
       candidate.isLive = true;
@@ -950,6 +975,7 @@ const doClearTabDetections = async (tabId: number) => {
   seenHlsMasterDirsByTab.delete(tabId);
   tabsWithMainVideo.delete(tabId);
   tabTitleHints.delete(tabId);
+  tabTitleMaps.delete(tabId);
   persistMainVideoTabs();
   const pendingBadge = badgeTimers.get(tabId);
   if (pendingBadge) {
@@ -1119,6 +1145,17 @@ export const setMainVideoPresent = (tabId: number, present: boolean) => {
 export const setTabTitleHint = (tabId: number, title: string) => {
   const clean = title.trim();
   if (clean) tabTitleHints.set(tabId, clean);
+};
+
+export const setTabTitleMap = (tabId: number, entries: { match: string; title: string }[]) => {
+  if (entries.length === 0) return;
+  const map = tabTitleMaps.get(tabId) ?? new Map<string, string>();
+  for (const e of entries) {
+    const match = e.match?.trim();
+    const title = e.title?.trim();
+    if (match && title) map.set(match, title);
+  }
+  tabTitleMaps.set(tabId, map);
 };
 
 export const hasMainVideo = (tabId: number) => tabsWithMainVideo.has(tabId);

@@ -10,6 +10,9 @@ export type SegmentSpec = {
   url: string;
   keyInfo?: HlsKeyInfo;
   sequenceNumber: number;
+  // Inclusive byte range (#EXT-X-BYTERANGE). When set, only this slice of `url`
+  // is fetched — without it every "segment" would pull the entire file.
+  byteRange?: { start: number; end: number };
 };
 
 export type FetchSegmentsRequest = {
@@ -19,6 +22,7 @@ export type FetchSegmentsRequest = {
   opfsName: string;
   segments: SegmentSpec[];
   initUrl?: string;
+  initByteRange?: { start: number; end: number };
   keyHeaders?: Record<string, string>;
   stage: 'download-video' | 'download-audio';
 };
