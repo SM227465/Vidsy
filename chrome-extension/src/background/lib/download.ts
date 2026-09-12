@@ -395,9 +395,11 @@ const runDownloadJob = async (payload: DownloadPayload) => {
   let usedHttpRange = false;
   try {
     const outputFormat = payload.outputFormat ?? 'mp4';
-    // HLS must always be muxed — direct download saves the m3u8 playlist as HTML
+    // HLS/DASH must always be muxed — a direct download would just save the
+    // .m3u8/.mpd manifest, not the media. (DASH used to be gated behind
+    // enableHlsMerging, which left sites like VK saving a useless manifest.)
     const shouldMergeHls = isHlsKind(payload.kind, payload.url);
-    const shouldMergeDash = isDashKind(payload.kind, payload.url) && settings.enableHlsMerging;
+    const shouldMergeDash = isDashKind(payload.kind, payload.url);
     const shouldMergeAV = !!payload.audioUrl && !shouldMergeHls && !shouldMergeDash;
     usedHttpRange = !shouldMergeHls && !shouldMergeDash && !shouldMergeAV;
 
@@ -654,9 +656,12 @@ export const startRecording = async (payload: DownloadPayload) => {
   }
 
   await ensureOffscreen();
+  // VK and other live streams are DASH (dynamic MPD, separate audio+video CMAF);
+  // route those to the DASH-live recorder. Everything else is HLS-live.
+  const recKind = payload.kind === 'dash' ? 'dash-live' : 'hls-live';
   const res = await sendMessageWithRetry({
     type: 'offscreen/download-blob',
-    payload: { kind: 'hls-live', url: payload.url, fileName, output: outputFormat, key, headers },
+    payload: { kind: recKind, url: payload.url, fileName, output: outputFormat, key, headers },
   });
   if (!res?.ok) {
     await removeHeadersForDownload(key);

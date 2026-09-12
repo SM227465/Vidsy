@@ -10,6 +10,7 @@ import {
   normalizeMediaUrl,
   MIN_MEDIA_SIZE_BYTES,
 } from './media-utils';
+import { MEDIA_MESSAGE } from '@extension/shared';
 import { mediaDetectionsStorage } from '@extension/storage';
 import type { MediaItem, MediaVariant } from '@extension/shared';
 
@@ -61,35 +62,45 @@ const probeContentLength = async (url: string, tabId?: number, pageUrl?: string)
 // URLs we've already probed for liveness — one network fetch per manifest.
 const livenessProbedUrls = new Set<string>();
 
-// One-shot probe: fetch an HLS manifest (resolving a master → its first variant)
-// and flag the item isLive when the media playlist has no #EXT-X-ENDLIST and is
-// not an explicit VOD. This is what surfaces the Record action for ANY live HLS
-// stream, not just the ones with a dedicated site extractor. Silent on failure.
+// Fetch an HLS manifest (resolving a master → its first variant) and decide
+// whether it's a live stream: has segments, no #EXT-X-ENDLIST, not explicit VOD.
+// Cached per URL so the VK suppression gate and the Record probe share one fetch.
+const hlsLivenessCache = new Map<string, boolean>();
+const hlsPlaylistIsLive = async (url: string): Promise<boolean> => {
+  const cached = hlsLivenessCache.get(url);
+  if (cached !== undefined) return cached;
+  let live = false;
+  try {
+    const res = await fetch(url, { credentials: 'include' });
+    if (res.ok) {
+      let mediaText = await res.text();
+      // Master playlist → resolve the first variant to inspect a real media playlist.
+      if (/#EXT-X-STREAM-INF/i.test(mediaText)) {
+        const variant = mediaText.split(/\r?\n/).find(l => l.trim() && !l.startsWith('#'));
+        if (variant) {
+          const vRes = await fetch(new URL(variant.trim(), url).toString(), { credentials: 'include' });
+          if (vRes.ok) mediaText = await vRes.text();
+        }
+      }
+      const hasSegments = /#EXTINF/i.test(mediaText);
+      const hasEndList = /#EXT-X-ENDLIST/i.test(mediaText);
+      const isVod = /#EXT-X-PLAYLIST-TYPE:\s*VOD/i.test(mediaText);
+      live = hasSegments && !hasEndList && !isVod;
+    }
+  } catch {
+    // CORS/offline/non-HLS — treat as not live (a normal download).
+  }
+  hlsLivenessCache.set(url, live);
+  return live;
+};
+
+// One-shot probe: flag the item isLive so the UI offers Record instead of
+// Download — works for ANY live HLS, not just sites with a dedicated extractor.
 const probeHlsLiveness = async (url: string, tabId?: number, pageUrl?: string) => {
   if (livenessProbedUrls.has(url)) return;
   livenessProbedUrls.add(url);
-  try {
-    const res = await fetch(url, { credentials: 'include' });
-    if (!res.ok) return;
-    let mediaText = await res.text();
-    // Master playlist → resolve the first variant to inspect a real media playlist.
-    if (/#EXT-X-STREAM-INF/i.test(mediaText)) {
-      const variant = mediaText.split(/\r?\n/).find(l => l.trim() && !l.startsWith('#'));
-      if (variant) {
-        const variantUrl = new URL(variant.trim(), url).toString();
-        const vRes = await fetch(variantUrl, { credentials: 'include' });
-        if (!vRes.ok) return;
-        mediaText = await vRes.text();
-      }
-    }
-    const hasSegments = /#EXTINF/i.test(mediaText);
-    const hasEndList = /#EXT-X-ENDLIST/i.test(mediaText);
-    const isVod = /#EXT-X-PLAYLIST-TYPE:\s*VOD/i.test(mediaText);
-    if (hasSegments && !hasEndList && !isVod) {
-      await upsertDetection({ url, isLive: true }, tabId, pageUrl);
-    }
-  } catch {
-    // CORS/offline/non-HLS — leave isLive undefined (defaults to a normal download).
+  if (await hlsPlaylistIsLive(url)) {
+    await upsertDetection({ url, isLive: true }, tabId, pageUrl);
   }
 };
 
@@ -430,6 +441,13 @@ const flushTabItems = async (tabKey: string) => {
   tabWriteTimers.delete(tabKey);
   const state = await mediaDetectionsStorage.get();
   await mediaDetectionsStorage.set({ ...state, [tabKey]: items });
+  // Push straight to the tab — content scripts get storage.onChanged unreliably,
+  // so this is what makes the content-UI pill appear when a detection lands after
+  // the pill mounted (e.g. a live stream whose manifest is fetched post-load).
+  const tabId = Number(tabKey);
+  if (Number.isFinite(tabId) && tabId >= 0) {
+    chrome.tabs.sendMessage(tabId, { type: MEDIA_MESSAGE.DETECTIONS_PUSH, payload: { items } }).catch(() => undefined);
+  }
 };
 
 const scheduleTabWrite = (tabKey: string) => {
@@ -455,18 +473,42 @@ const setTabItems = (tabKey: string, items: MediaItem[]) => {
   scheduleTabWrite(tabKey);
 };
 
+// VK (and other SPA players) never put the video title in <title>/og:title — the
+// content-script extractor relays the player's own title here (keyed by tab) and
+// it takes precedence over the host/tab-title fallback for that tab's items.
+const tabTitleHints = new Map<number, string>();
+
+// Per-tab map of "URL substring → title". A feed (Reddit) holds many videos in
+// ONE tab, so a single tabTitleHint can only ever name one of them; the content
+// script pairs each post's title with an id that appears in that post's media
+// URL, and the detection matches on it. Checked BEFORE the per-tab hint.
+const tabTitleMaps = new Map<number, Map<string, string>>();
+
+const titleFromMap = (url: string, tabId?: number): string | undefined => {
+  if (tabId === undefined) return undefined;
+  const map = tabTitleMaps.get(tabId);
+  if (!map) return undefined;
+  for (const [match, title] of map) {
+    if (url.includes(match)) return title;
+  }
+  return undefined;
+};
+
 const normalizeDetection = (candidate: Partial<MediaItem>, tabId?: number, pageUrl?: string): MediaItem => {
   const kind = candidate.kind ?? deriveKind(candidate.url!, candidate.mimeType);
+  // Per-URL match wins over the per-tab hint: on a feed it is the only one that
+  // can tell two videos in the same tab apart.
+  const titleHint = titleFromMap(candidate.url!, tabId) ?? (tabId !== undefined ? tabTitleHints.get(tabId) : undefined);
   return {
     id: candidate.id ?? createId(),
     url: candidate.url!,
     mimeType: candidate.mimeType,
-    title: candidate.title ?? documentTitleFromUrl(pageUrl),
+    title: titleHint ?? candidate.title ?? documentTitleFromUrl(pageUrl),
     pageUrl,
     tabId,
     detectedAt: candidate.detectedAt ?? Date.now(),
     source: candidate.source ?? 'element',
-    fileName: candidate.fileName ?? deriveFileName(candidate.url!, candidate.title),
+    fileName: candidate.fileName ?? deriveFileName(candidate.url!, titleHint ?? candidate.title),
     contentLength: candidate.contentLength,
     kind,
     variants: candidate.variants,
@@ -489,6 +531,25 @@ const upsertDetection = async (candidate: Partial<MediaItem>, tabId?: number, pa
 
 const doUpsertDetection = async (candidate: Partial<MediaItem>, tabId?: number, pageUrl?: string) => {
   if (!candidate.url) return;
+
+  // VK VOD serves an HLS master alongside a complete DASH manifest; we drop the
+  // HLS so one video yields one row, and the DASH is the better source (it
+  // already drives the resolution picker). A LIVE VK stream has ONLY HLS — keep
+  // it and mark it live so the pill offers Record.
+  //
+  // NOTE (2026-09-12): the ORIGINAL reason was that VK's HLS is video-only, with
+  // audio in a separate #EXT-X-MEDIA group we could not merge. That limitation
+  // is GONE — hls-download.ts now fetches the audio rendition and muxes it. This
+  // suppression is therefore de-duplication only, and could be lifted if VK's
+  // DASH ever proves unreliable (e.g. a DRM-flagged MPD would leave the user
+  // with an undownloadable row and no HLS fallback).
+  if (candidate.kind === 'hls' && /(^|\.)vkuser\.net$/i.test(hostOf(candidate.url) ?? '')) {
+    if (await hlsPlaylistIsLive(candidate.url)) {
+      candidate.isLive = true;
+    } else {
+      return;
+    }
+  }
 
   // Normalize CDN byte-range URLs (e.g. Instagram's ?bytestart=...&byteend=...)
   // so each chunk of the same video collapses to a single entry and the
@@ -913,6 +974,8 @@ const doClearTabDetections = async (tabId: number) => {
   seenUrlsByTab.delete(tabId);
   seenHlsMasterDirsByTab.delete(tabId);
   tabsWithMainVideo.delete(tabId);
+  tabTitleHints.delete(tabId);
+  tabTitleMaps.delete(tabId);
   persistMainVideoTabs();
   const pendingBadge = badgeTimers.get(tabId);
   if (pendingBadge) {
@@ -952,6 +1015,26 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
   if (isHlsSegment(url, contentType)) return;
   if (isDashSegment(url, contentType)) return;
 
+  // VK feed/listing pages eagerly fetch each hovered card's DASH manifest and
+  // caption tracks — none is the video the user is actually watching. On the main
+  // site VK only "watches" on a /video-… or /clip-… path, so ignore VK media
+  // surfaced from any other page (homepage, search, channel). The dedicated live
+  // subdomain (live.vkvideo.ru/<channel>) is ALWAYS a live watch page — never a
+  // feed — so it's exempt. Gated on the VK initiator so non-VK sites pay nothing.
+  const initiatorHost = details.initiator ? hostOf(details.initiator) : null;
+  const isVkInitiator = initiatorHost ? /(^|\.)(vkvideo\.ru|vk\.com)$/i.test(initiatorHost) : false;
+  const isVkLiveInitiator = initiatorHost ? /(^|\.)live\.(vkvideo\.ru|vk\.com)$/i.test(initiatorHost) : false;
+  if (isVkInitiator && !isVkLiveInitiator && tabId !== undefined && tabId >= 0) {
+    let path = '';
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      path = tab.url ? new URL(tab.url).pathname : '';
+    } catch {
+      /* tab closed mid-request */
+    }
+    if (!/^\/(video|clip)-?\d+_\d+/.test(path)) return;
+  }
+
   // Skip small payloads for direct media (not manifests) — avoids tracker noise
   if ((kind === 'video' || kind === 'audio') && contentLength !== undefined && contentLength < MIN_MEDIA_SIZE_BYTES) {
     return;
@@ -968,6 +1051,7 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
 
   let variants: MediaVariant[] | undefined;
   let isDrmProtected = false;
+  let isLiveItem = false;
   if (kind === 'hls') {
     const parsed = await parseHlsVariants(url);
     variants = parsed.variants;
@@ -1002,6 +1086,7 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
     const parsed = await parseDashVariants(url);
     variants = parsed.variants;
     isDrmProtected = parsed.isDrmProtected;
+    if (parsed.isLive) isLiveItem = true;
     if (variants && variants.length > 1) {
       variants = variants.slice().sort((a, b) => {
         const aRes = a.resolution?.height ?? 0;
@@ -1016,10 +1101,16 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
 
   // Use actual tab URL (details.initiator is only the scheme+host, not the full path).
   let pageUrl = details.initiator;
+  let pageTitle: string | undefined;
   if (tabId !== undefined && tabId >= 0) {
     try {
       const tab = await chrome.tabs.get(tabId);
       if (tab.url) pageUrl = tab.url;
+      // The injected og:title probe (in upsert) misses SPA players like VK whose
+      // <title> is set after navigation — fall back to the tab's title so
+      // network-detected items aren't labelled by host ("vkvideo.ru"). Strip only
+      // a trailing " - SiteName" so titles that use " | " stay intact.
+      if (tab.title) pageTitle = tab.title.replace(/\s+[-–—]\s+[^-–—]{1,40}$/, '').trim() || tab.title;
     } catch {
       // tab may not exist
     }
@@ -1034,6 +1125,8 @@ export const handleNetworkDetection = async (details: chrome.webRequest.WebRespo
       kind,
       variants,
       isDrmProtected: isDrmProtected || undefined,
+      isLive: isLiveItem || undefined,
+      title: pageTitle,
     },
     tabId,
     pageUrl,
@@ -1044,6 +1137,25 @@ export const setMainVideoPresent = (tabId: number, present: boolean) => {
   if (present) tabsWithMainVideo.add(tabId);
   else tabsWithMainVideo.delete(tabId);
   persistMainVideoTabs();
+};
+
+// The content-script extractor (e.g. VK) relays the player's own video title so
+// network-detected items aren't labelled by host / generic SPA <title>. Sent
+// before the manifest fetch, so it's in place when the DASH item is normalized.
+export const setTabTitleHint = (tabId: number, title: string) => {
+  const clean = title.trim();
+  if (clean) tabTitleHints.set(tabId, clean);
+};
+
+export const setTabTitleMap = (tabId: number, entries: { match: string; title: string }[]) => {
+  if (entries.length === 0) return;
+  const map = tabTitleMaps.get(tabId) ?? new Map<string, string>();
+  for (const e of entries) {
+    const match = e.match?.trim();
+    const title = e.title?.trim();
+    if (match && title) map.set(match, title);
+  }
+  tabTitleMaps.set(tabId, map);
 };
 
 export const hasMainVideo = (tabId: number) => tabsWithMainVideo.has(tabId);

@@ -115,6 +115,23 @@ const manifest = {
       world: 'MAIN',
     },
     {
+      // Title relay only — Reddit video is detected by the generic HLS sniffer.
+      matches: ['*://*.reddit.com/*'],
+      js: ['content/reddit.iife.js'],
+      run_at: 'document_idle',
+    },
+    {
+      matches: ['*://*.vkvideo.ru/*', '*://*.vk.com/video*', '*://*.vk.com/clip*'],
+      js: ['content/vkvideo.iife.js'],
+      run_at: 'document_idle',
+    },
+    {
+      matches: ['*://*.vkvideo.ru/*', '*://*.vk.com/video*', '*://*.vk.com/clip*'],
+      js: ['content/vkvideo_main.iife.js'],
+      run_at: 'document_start',
+      world: 'MAIN',
+    },
+    {
       matches: ['http://*/*', 'https://*/*', '<all_urls>'],
       exclude_matches: RESTRICTED_HOST_PATTERNS,
       js: ['content-ui/all.iife.js'],

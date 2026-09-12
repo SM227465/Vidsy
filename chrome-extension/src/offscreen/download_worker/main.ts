@@ -365,19 +365,36 @@ const handleAppendSegments = async (req: AppendSegmentsRequest): Promise<void> =
 const handleFetchSegments = async (req: FetchSegmentsRequest): Promise<void> => {
   const controller = new AbortController();
   activeAborts.set(req.jobKey, controller);
-  const { jobId, jobKey, opfsName, segments, initUrl, keyHeaders, stage } = req;
+  const { jobId, jobKey, opfsName, segments, initUrl, initByteRange, keyHeaders, stage } = req;
+
+  // A playlist that uses #EXT-X-BYTERANGE points every segment at the SAME file;
+  // only the Range header distinguishes them. fetchWithRetry already treats 206
+  // as success.
+  const rangeHeader = (r?: { start: number; end: number }): Record<string, string> | undefined =>
+    r ? { Range: `bytes=${r.start}-${r.end}` } : undefined;
 
   try {
     await opfs.open(opfsName);
 
     if (initUrl) {
-      const init = await fetchWithRetry(initUrl, controller.signal);
+      let init = await fetchWithRetry(initUrl, controller.signal, rangeHeader(initByteRange));
+      if (initByteRange) {
+        const want = initByteRange.end - initByteRange.start + 1;
+        if (init.byteLength > want) init = init.slice(initByteRange.start, initByteRange.start + want);
+      }
       opfs.append(opfsName, init);
     }
 
     const fetchOne = async (i: number, signal: AbortSignal): Promise<ArrayBuffer> => {
       const spec: SegmentSpec = segments[i];
-      let data = await fetchWithRetry(spec.url, signal);
+      let data = await fetchWithRetry(spec.url, signal, rangeHeader(spec.byteRange));
+      // A server that IGNORES Range answers 200 with the whole file. Appending
+      // that once per segment is what produced a 1.6 GB file from a 36 MB video,
+      // so slice the requested window out ourselves rather than trusting 206.
+      if (spec.byteRange) {
+        const want = spec.byteRange.end - spec.byteRange.start + 1;
+        if (data.byteLength > want) data = data.slice(spec.byteRange.start, spec.byteRange.start + want);
+      }
       if (spec.keyInfo?.method === 'AES-128') {
         data = await decryptSegment(data, spec.keyInfo, spec.sequenceNumber, keyHeaders);
       }

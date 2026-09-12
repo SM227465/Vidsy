@@ -2,6 +2,13 @@ import 'webextension-polyfill';
 import { cleanupBlob, disarmCleanupFallback } from './lib/blob-cleanup';
 import { pauseIntentKeys } from './lib/cancel-intent';
 import { downloadDashMuxed } from './lib/dash-download';
+import {
+  abortDashLiveRecording,
+  pauseDashLiveRecording,
+  resumeDashLiveRecording,
+  startDashLiveRecording,
+  stopDashLiveRecording,
+} from './lib/dash-live-recorder';
 import { downloadHlsMuxed } from './lib/hls-download';
 import {
   abortLiveRecording,
@@ -13,8 +20,8 @@ import {
 import { downloadHttpDirect } from './lib/http-download';
 import { downloadMerged } from './lib/merged-download';
 import { purgeOpfsOrphans } from './lib/opfs-gc';
-import { swLog } from './lib/sw-log';
 import { activeAbortControllers } from './lib/segment-fetcher';
+import { swLog } from './lib/sw-log';
 import { getOpfsFile, muxInWorker, removeOpfs } from './lib/worker-client';
 
 // Sweep orphaned OPFS files left over from a prior session (crash,
@@ -76,8 +83,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'offscreen/pause-recording') {
     const { key, resume } = message.payload;
-    if (resume) resumeLiveRecording(key);
-    else pauseLiveRecording(key);
+    // Call both engines; the one that doesn't own this key is a no-op.
+    if (resume) {
+      resumeLiveRecording(key);
+      resumeDashLiveRecording(key);
+    } else {
+      pauseLiveRecording(key);
+      pauseDashLiveRecording(key);
+    }
     sendResponse({ ok: true });
     return;
   }
@@ -88,10 +101,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         if (discard) {
           await abortLiveRecording(key);
+          await abortDashLiveRecording(key);
           sendResponse({ ok: true, discarded: true });
           return;
         }
-        const res = await stopLiveRecording(key);
+        // Whichever engine owns the key returns the blob; the other returns null.
+        const res = (await stopLiveRecording(key)) ?? (await stopDashLiveRecording(key));
         if (res) sendResponse({ ok: true, blobUrl: res.blobUrl, ext: res.ext });
         else sendResponse({ ok: false, error: 'No active recording for this key' });
       } catch (err) {
@@ -107,6 +122,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (kind === 'hls-live') {
       try {
         startLiveRecording({ playlistUrl: url, fileName, output, key, headers });
+        sendResponse({ ok: true, recording: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    }
+    if (kind === 'dash-live') {
+      try {
+        startDashLiveRecording({ manifestUrl: url, fileName, output, key, headers });
         sendResponse({ ok: true, recording: true });
       } catch (err) {
         sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });

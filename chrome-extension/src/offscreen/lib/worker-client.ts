@@ -92,79 +92,79 @@ const attachListeners = (w: Worker): void => {
     onWorkerDead(w, new Error('Download worker response could not be deserialized'));
   });
   w.addEventListener('message', (ev: MessageEvent<WorkerResponse>) => {
-      const msg = ev.data;
-      switch (msg.type) {
-        case 'progress': {
-          const { jobKey, stage, downloadedBytes, estimatedBytes, muxPercent, chunks } = msg as ProgressUpdate;
-          void updateProgress(jobKey, { stage, downloadedBytes, estimatedBytes, muxPercent, chunks });
-          return;
-        }
-        case 'fetch-done': {
-          const p = pendingFetch.get(msg.jobId);
-          if (p) {
-            pendingFetch.delete(msg.jobId);
-            p.resolve(msg.totalBytes);
-          }
-          return;
-        }
-        case 'mux-done': {
-          const p = pendingMux.get(msg.jobId);
-          if (p) {
-            pendingMux.delete(msg.jobId);
-            p.resolve({ outputOpfsName: msg.outputOpfsName, totalBytes: msg.totalBytes });
-          }
-          return;
-        }
-        case 'get-file-done': {
-          const p = pendingFile.get(msg.jobId);
-          if (p) {
-            pendingFile.delete(msg.jobId);
-            p.resolve(msg.file);
-          }
-          return;
-        }
-        case 'remove-done': {
-          const p = pendingAck.get(msg.jobId);
-          if (p) {
-            pendingAck.delete(msg.jobId);
-            p.resolve();
-          }
-          return;
-        }
-        case 'error': {
-          const err = new Error(msg.error);
-          const f = pendingFetch.get(msg.jobId);
-          if (f) {
-            pendingFetch.delete(msg.jobId);
-            f.reject(err);
-            return;
-          }
-          const g = pendingFile.get(msg.jobId);
-          if (g) {
-            pendingFile.delete(msg.jobId);
-            g.reject(err);
-            return;
-          }
-          const a = pendingAck.get(msg.jobId);
-          if (a) {
-            pendingAck.delete(msg.jobId);
-            a.reject(err);
-            return;
-          }
-          const m = pendingMux.get(msg.jobId);
-          if (m) {
-            pendingMux.delete(msg.jobId);
-            m.reject(err);
-          }
-          return;
-        }
-        case 'pong':
-          return;
-        case 'log':
-          swLog(`[worker] ${msg.msg}`, msg.data);
-          return;
+    const msg = ev.data;
+    switch (msg.type) {
+      case 'progress': {
+        const { jobKey, stage, downloadedBytes, estimatedBytes, muxPercent, chunks } = msg as ProgressUpdate;
+        void updateProgress(jobKey, { stage, downloadedBytes, estimatedBytes, muxPercent, chunks });
+        return;
       }
-    });
+      case 'fetch-done': {
+        const p = pendingFetch.get(msg.jobId);
+        if (p) {
+          pendingFetch.delete(msg.jobId);
+          p.resolve(msg.totalBytes);
+        }
+        return;
+      }
+      case 'mux-done': {
+        const p = pendingMux.get(msg.jobId);
+        if (p) {
+          pendingMux.delete(msg.jobId);
+          p.resolve({ outputOpfsName: msg.outputOpfsName, totalBytes: msg.totalBytes });
+        }
+        return;
+      }
+      case 'get-file-done': {
+        const p = pendingFile.get(msg.jobId);
+        if (p) {
+          pendingFile.delete(msg.jobId);
+          p.resolve(msg.file);
+        }
+        return;
+      }
+      case 'remove-done': {
+        const p = pendingAck.get(msg.jobId);
+        if (p) {
+          pendingAck.delete(msg.jobId);
+          p.resolve();
+        }
+        return;
+      }
+      case 'error': {
+        const err = new Error(msg.error);
+        const f = pendingFetch.get(msg.jobId);
+        if (f) {
+          pendingFetch.delete(msg.jobId);
+          f.reject(err);
+          return;
+        }
+        const g = pendingFile.get(msg.jobId);
+        if (g) {
+          pendingFile.delete(msg.jobId);
+          g.reject(err);
+          return;
+        }
+        const a = pendingAck.get(msg.jobId);
+        if (a) {
+          pendingAck.delete(msg.jobId);
+          a.reject(err);
+          return;
+        }
+        const m = pendingMux.get(msg.jobId);
+        if (m) {
+          pendingMux.delete(msg.jobId);
+          m.reject(err);
+        }
+        return;
+      }
+      case 'pong':
+        return;
+      case 'log':
+        swLog(`[worker] ${msg.msg}`, msg.data);
+        return;
+    }
+  });
 };
 
 const send = (req: WorkerRequest): void => {
@@ -176,6 +176,7 @@ const fetchSegmentsToOpfs = (args: {
   opfsName: string;
   segments: SegmentSpec[];
   initUrl?: string;
+  initByteRange?: { start: number; end: number };
   keyHeaders?: Record<string, string>;
   stage: 'download-video' | 'download-audio';
 }): Promise<{ opfsName: string; totalBytes: number }> =>

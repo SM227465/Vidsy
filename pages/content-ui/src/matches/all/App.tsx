@@ -2,12 +2,44 @@ import { DropdownPanel } from './components/DropdownPanel';
 import { InterceptModal } from './components/InterceptModal';
 import { PillBar } from './components/PillBar';
 import { FONT } from './components/tokens';
-import { ACTIVE_STAGES, pickBestVariant, qLabel, buildRows } from './lib/media-helpers';
+import { ACTIVE_STAGES, pickActiveEntry, pickBestVariant, qLabel, buildRows } from './lib/media-helpers';
 import { MEDIA_MESSAGE, useStorage } from '@extension/shared';
 import { mediaDetectionsStorage, mediaDownloadsStorage, mediaSettingsStorage } from '@extension/storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { VideoEntry } from './lib/media-helpers';
 import type { MediaDownloadProgress, MediaItem } from '@extension/shared';
+
+// Collect <video> elements, piercing open shadow roots. Some players (VK) mount
+// their <video> inside a web component, where document.querySelectorAll('video')
+// can't reach it. Light DOM is the fast path; only walk shadow roots when the
+// light DOM has none, to keep ordinary pages cheap.
+// Smallest box we'll treat as a player when falling back to iframes — keeps the
+// pill off tracking pixels, ad slots and social buttons.
+const MIN_IFRAME_W = 280;
+const MIN_IFRAME_H = 160;
+
+const collectVideos = (): HTMLElement[] => {
+  const light = Array.from(document.querySelectorAll<HTMLVideoElement>('video'));
+  if (light.length > 0) return light;
+  const out: HTMLElement[] = [];
+  const walk = (root: Document | ShadowRoot) => {
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>('*'))) {
+      if (el.shadowRoot) {
+        out.push(...Array.from(el.shadowRoot.querySelectorAll<HTMLVideoElement>('video')));
+        walk(el.shadowRoot);
+      }
+    }
+  };
+  walk(document);
+  if (out.length > 0) return out;
+  // Last resort: the player is in a cross-origin iframe (VK), so this frame can
+  // never see its <video>. Anchor to the iframe box itself — otherwise the pill
+  // falls back to the viewport corner, far from the video the user is looking at.
+  return Array.from(document.querySelectorAll<HTMLIFrameElement>('iframe')).filter(f => {
+    const r = f.getBoundingClientRect();
+    return r.width >= MIN_IFRAME_W && r.height >= MIN_IFRAME_H;
+  });
+};
 
 const App = () => {
   const detections = useStorage(mediaDetectionsStorage);
@@ -17,10 +49,22 @@ const App = () => {
   // updates fine). `polled` is refreshed by a direct session read while a job is
   // active (see effect below) and takes precedence so the pill stays live.
   const [polled, setPolled] = useState<Record<string, MediaDownloadProgress> | null>(null);
-  const downloads = useMemo(
-    () => (polled ?? rawDownloads ?? {}) as Record<string, MediaDownloadProgress>,
-    [polled, rawDownloads],
-  );
+  // Neither source is authoritative on its own: `rawDownloads` (onChanged) can
+  // freeze, and `polled` lags by its interval — which is very visible now that
+  // range-parallel downloads finish in seconds (the pill showed a stale % while
+  // the live side panel was far ahead). Merge per key, preferring whichever
+  // snapshot was written most recently (updatedAt).
+  const downloads = useMemo(() => {
+    const a = (polled ?? {}) as Record<string, MediaDownloadProgress>;
+    const b = (rawDownloads ?? {}) as Record<string, MediaDownloadProgress>;
+    const out: Record<string, MediaDownloadProgress> = { ...b, ...a };
+    for (const k of Object.keys(out)) {
+      const pa = a[k];
+      const pb = b[k];
+      if (pa && pb) out[k] = (pb.updatedAt ?? 0) > (pa.updatedAt ?? 0) ? pb : pa;
+    }
+    return out;
+  }, [polled, rawDownloads]);
   const settings = useStorage(mediaSettingsStorage);
 
   /* tab ID via background message (chrome.tabs not available in content scripts) */
@@ -34,17 +78,22 @@ const App = () => {
       .catch(() => {});
   }, []);
 
+  // Detections pushed straight from the background (reliable; storage.onChanged
+  // is flaky in content scripts) take precedence over the useStorage snapshot —
+  // this is what makes the pill appear when a detection lands after mount (live).
+  const [pushedItems, setPushedItems] = useState<MediaItem[] | null>(null);
   const tabItems = useMemo<MediaItem[]>(() => {
+    if (pushedItems) return pushedItems;
     if (!detections || tabId === null) return [];
     return detections[String(tabId)] ?? [];
-  }, [detections, tabId]);
+  }, [pushedItems, detections, tabId]);
 
   /* video element tracking */
   const [videos, setVideos] = useState<VideoEntry[]>([]);
   useEffect(() => {
     let n = 0;
-    const ids = new WeakMap<HTMLVideoElement, string>();
-    const getId = (el: HTMLVideoElement) => {
+    const ids = new WeakMap<HTMLElement, string>();
+    const getId = (el: HTMLElement) => {
       if (!ids.has(el)) ids.set(el, `v${n++}`);
       return ids.get(el)!;
     };
@@ -54,7 +103,7 @@ const App = () => {
       rAF = requestAnimationFrame(() => {
         rAF = null;
         setVideos(
-          Array.from(document.querySelectorAll<HTMLVideoElement>('video'))
+          collectVideos()
             .filter(el => el.offsetWidth > 100 && el.offsetHeight > 60)
             .map(el => ({ el, id: getId(el), rect: el.getBoundingClientRect() })),
         );
@@ -103,6 +152,8 @@ const App = () => {
     const handler = (message: { type?: string; payload?: unknown }) => {
       if (message?.type === MEDIA_MESSAGE.INTERCEPT_SHOW) {
         setIntercept(message.payload as typeof intercept);
+      } else if (message?.type === MEDIA_MESSAGE.DETECTIONS_PUSH) {
+        setPushedItems((message.payload as { items: MediaItem[] }).items ?? []);
       }
     };
     chrome.runtime.onMessage.addListener(handler);
@@ -214,7 +265,7 @@ const App = () => {
   /* Recover active download after page refresh */
   useEffect(() => {
     if (busyUrl) return; // already tracking something
-    const activeEntry = Object.entries(downloads).find(([, p]) => ACTIVE_STAGES.has(p.stage));
+    const activeEntry = pickActiveEntry(downloads);
     if (activeEntry) setBusyUrl(activeEntry[0]);
     // Only run on first mount (when downloads first becomes available)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -253,14 +304,17 @@ const App = () => {
     let cancelled = false;
     const poll = async () => {
       try {
-        const v = await chrome.storage.session.get('media-downloads');
-        if (!cancelled) setPolled((v?.['media-downloads'] ?? {}) as Record<string, MediaDownloadProgress>);
+        // Pull from the background (authoritative, fresh) rather than reading
+        // chrome.storage.session directly — content scripts see session writes
+        // staler than extension pages, which made the pill % lag the side panel.
+        const res = await chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.GET_DOWNLOADS });
+        if (!cancelled && res?.ok) setPolled((res.downloads ?? {}) as Record<string, MediaDownloadProgress>);
       } catch {
-        /* ignore */
+        /* background asleep / no receiver — keep last value */
       }
     };
     void poll();
-    const t = setInterval(poll, 700);
+    const t = setInterval(poll, 350);
     return () => {
       cancelled = true;
       clearInterval(t);
@@ -273,12 +327,15 @@ const App = () => {
 
   /* active progress */
   const primary = tabItems[0];
+  // Never pick by "first item that looks active" — an orphaned row (SW died
+  // mid-download) stays at an active stage forever and would capture the pill,
+  // freezing it at a stale percentage while the real job ran on under another key.
+  const freshestActive = pickActiveEntry(downloads);
   const activeItem = busyUrl
     ? tabItems.find(it => it.url === busyUrl)
-    : tabItems.find(it => {
-        const p = downloads[it.url];
-        return p != null && ACTIVE_STAGES.has(p.stage);
-      });
+    : freshestActive
+      ? tabItems.find(it => it.url === freshestActive[0])
+      : undefined;
   const isBusy = !!activeItem;
 
   /* positioning */
@@ -299,9 +356,11 @@ const App = () => {
     prevVideoRef.current = effectiveVideo;
   }
 
-  if (!effectiveVideo) return interceptModal;
-
-  const vr = effectiveVideo.rect;
+  // Anchor the pill to the page <video> when we can find one; otherwise pin it
+  // to the top-right corner so it still appears on players we can't anchor to
+  // (canvas / shadow-DOM / iframe players like VK). Previously we hid the pill
+  // entirely when no <video> was found, which is why VK showed no download pill.
+  const vr = effectiveVideo?.rect;
   const right = vr ? window.innerWidth - vr.right + 8 : 12;
   const top = vr ? vr.top + 8 : 12;
 
@@ -319,13 +378,15 @@ const App = () => {
       ? Math.min(100, Math.round((prog.downloadedBytes / prog.estimatedBytes) * 100))
       : null;
 
+  // No trailing ellipsis: the pill is narrow and a '…' right before the percentage
+  // reads as clipped text ("Download… 11%") rather than as an in-progress hint.
   const stageShort: Record<string, string> = {
-    init: 'Downloading…',
-    'fetch-manifest': 'Downloading…',
-    'download-video': 'Downloading…',
-    'download-audio': 'Downloading…',
-    mux: 'Processing…',
-    finalize: 'Saving…',
+    init: 'Downloading',
+    'fetch-manifest': 'Downloading',
+    'download-video': 'Downloading',
+    'download-audio': 'Downloading',
+    mux: 'Processing',
+    finalize: 'Saving',
     success: '✓ Done',
     failed: '✗ Failed',
   };

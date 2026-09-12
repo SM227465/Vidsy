@@ -184,6 +184,21 @@ export const MEDIA_MESSAGE = {
   RECORD_STOP: 'media/record-stop',
   RECORD_PAUSE: 'media/record-pause',
   RECORD_RESUME: 'media/record-resume',
+  // Content scripts read chrome.storage.session staler than extension pages, so
+  // the content-UI pill pulls the authoritative download progress from the
+  // background (which owns the writes) instead of reading storage directly.
+  GET_DOWNLOADS: 'media/get-downloads',
+  // SPA players (VK) don't expose the video title via <title>/og:title — the site
+  // extractor relays the player's own title so network detections get a name.
+  TITLE_HINT: 'media/title-hint',
+  // Content script → background: titles keyed by a substring of the media URL
+  // (e.g. a Reddit v.redd.it id). A per-tab TITLE_HINT can't name anything on a
+  // FEED, where one tab holds many videos — this maps each one to its own post.
+  TITLE_MAP: 'media/title-map',
+  // Background → content script: push a tab's detection list directly. Content
+  // scripts receive storage.onChanged unreliably, so the content-UI pill can
+  // miss a detection that lands after it mounted (e.g. a live stream's manifest).
+  DETECTIONS_PUSH: 'media/detections-push',
 } as const;
 
 export type MediaMessage =
@@ -246,6 +261,10 @@ export type MediaMessage =
     }
   | { type: typeof MEDIA_MESSAGE.RECORD_STOP; payload: { key: string; fileName?: string; discard?: boolean } }
   | { type: typeof MEDIA_MESSAGE.RECORD_PAUSE; payload: { key: string } }
-  | { type: typeof MEDIA_MESSAGE.RECORD_RESUME; payload: { key: string } };
+  | { type: typeof MEDIA_MESSAGE.RECORD_RESUME; payload: { key: string } }
+  | { type: typeof MEDIA_MESSAGE.GET_DOWNLOADS }
+  | { type: typeof MEDIA_MESSAGE.TITLE_HINT; payload: { title: string } }
+  | { type: typeof MEDIA_MESSAGE.TITLE_MAP; payload: { entries: { match: string; title: string }[] } }
+  | { type: typeof MEDIA_MESSAGE.DETECTIONS_PUSH; payload: { items: MediaItem[] } };
 
 export type PasteUrlResult = { ok: true; kind: MediaKind } | { ok: false; error: string };
