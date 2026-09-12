@@ -58,12 +58,18 @@ export type MediaItem = {
   // True when any variant of this HLS/DASH manifest declared a DRM key system.
   // The downloader is intentionally DRM-blind — this flag just drives the UI lockout.
   isDrmProtected?: boolean;
+  // True when this is a live HLS stream (media playlist with no #EXT-X-ENDLIST).
+  // Drives the Record action in the UI. May be undefined until liveness is known
+  // — the recorder re-validates at start, so the flag is a hint, not a gate.
+  isLive?: boolean;
 };
 
 export type MediaDownloadStage =
   | 'queued'
   | 'init'
   | 'fetch-manifest'
+  | 'recording'
+  | 'recording-paused'
   | 'download-video'
   | 'download-audio'
   | 'mux'
@@ -117,18 +123,45 @@ export type MediaHistoryItem = MediaItem & {
 export type MediaDetectionState = Record<string, MediaItem[]>;
 export type MediaHistoryState = MediaHistoryItem[];
 
+// Resume manifest persisted in chrome.storage.local on pause so an HTTP-range
+// download can be resumed in a different browser session. Mirrored from the
+// session-scoped mediaDownloadsStorage entry; lifetime is bounded by
+// MediaSettings.pausedDownloadRetentionDays, after which the offscreen-doc
+// startup GC sweeps both the manifest and the underlying OPFS file.
+export type ResumeManifest = {
+  key: string;
+  url: string;
+  fileName?: string;
+  title?: string;
+  item: MediaItem;
+  outputFormat?: 'mp4' | 'mp3';
+  opfsName: string;
+  totalBytes: number;
+  ranges: { start: number; end: number }[];
+  chunks: ChunkProgress[];
+  downloadedBytes: number;
+  pausedAt: number;
+  expiresAt: number;
+};
+
+export type MediaResumablesState = Record<string, ResumeManifest>;
+
 export type MediaSettings = {
   enableHlsMerging: boolean;
   maxHistory: number;
   // Optional filename template. When empty, the downloader falls back to deriveFileName.
   // Supported tokens: {title} {resolution} {ext} {kind} {host} {date}
   filenameTemplate: string;
+  // How long a paused HTTP-range download stays resumable across browser
+  // sessions before its OPFS scratch file gets GC'd. Days. Default 7.
+  pausedDownloadRetentionDays: number;
 };
 
 export const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
   enableHlsMerging: false,
   maxHistory: 30,
   filenameTemplate: '',
+  pausedDownloadRetentionDays: 7,
 };
 
 export const MEDIA_MESSAGE = {
@@ -147,6 +180,25 @@ export const MEDIA_MESSAGE = {
   INTERCEPT_DOWNLOAD_VIDSY: 'media/intercept-download-vidsy',
   INTERCEPT_RESUME_BROWSER: 'media/intercept-resume-browser',
   INTERCEPT_DISMISS: 'media/intercept-dismiss',
+  RECORD_START: 'media/record-start',
+  RECORD_STOP: 'media/record-stop',
+  RECORD_PAUSE: 'media/record-pause',
+  RECORD_RESUME: 'media/record-resume',
+  // Content scripts read chrome.storage.session staler than extension pages, so
+  // the content-UI pill pulls the authoritative download progress from the
+  // background (which owns the writes) instead of reading storage directly.
+  GET_DOWNLOADS: 'media/get-downloads',
+  // SPA players (VK) don't expose the video title via <title>/og:title — the site
+  // extractor relays the player's own title so network detections get a name.
+  TITLE_HINT: 'media/title-hint',
+  // Content script → background: titles keyed by a substring of the media URL
+  // (e.g. a Reddit v.redd.it id). A per-tab TITLE_HINT can't name anything on a
+  // FEED, where one tab holds many videos — this maps each one to its own post.
+  TITLE_MAP: 'media/title-map',
+  // Background → content script: push a tab's detection list directly. Content
+  // scripts receive storage.onChanged unreliably, so the content-UI pill can
+  // miss a detection that lands after it mounted (e.g. a live stream's manifest).
+  DETECTIONS_PUSH: 'media/detections-push',
 } as const;
 
 export type MediaMessage =
@@ -193,6 +245,26 @@ export type MediaMessage =
     }
   | { type: typeof MEDIA_MESSAGE.INTERCEPT_DOWNLOAD_VIDSY; payload: { url: string; fileName?: string } }
   | { type: typeof MEDIA_MESSAGE.INTERCEPT_RESUME_BROWSER; payload: { url: string; fileName?: string } }
-  | { type: typeof MEDIA_MESSAGE.INTERCEPT_DISMISS; payload: { url: string } };
+  | { type: typeof MEDIA_MESSAGE.INTERCEPT_DISMISS; payload: { url: string } }
+  | {
+      type: typeof MEDIA_MESSAGE.RECORD_START;
+      payload: {
+        url: string;
+        key?: string;
+        kind?: MediaKind;
+        fileName?: string;
+        title?: string;
+        tabId?: number;
+        outputFormat?: 'mp4' | 'mp3';
+        item?: MediaItem;
+      };
+    }
+  | { type: typeof MEDIA_MESSAGE.RECORD_STOP; payload: { key: string; fileName?: string; discard?: boolean } }
+  | { type: typeof MEDIA_MESSAGE.RECORD_PAUSE; payload: { key: string } }
+  | { type: typeof MEDIA_MESSAGE.RECORD_RESUME; payload: { key: string } }
+  | { type: typeof MEDIA_MESSAGE.GET_DOWNLOADS }
+  | { type: typeof MEDIA_MESSAGE.TITLE_HINT; payload: { title: string } }
+  | { type: typeof MEDIA_MESSAGE.TITLE_MAP; payload: { entries: { match: string; title: string }[] } }
+  | { type: typeof MEDIA_MESSAGE.DETECTIONS_PUSH; payload: { items: MediaItem[] } };
 
 export type PasteUrlResult = { ok: true; kind: MediaKind } | { ok: false; error: string };

@@ -1,19 +1,35 @@
 import 'webextension-polyfill';
-import { cleanupBlob } from './lib/blob-cleanup';
+import { cleanupBlob, disarmCleanupFallback } from './lib/blob-cleanup';
+import { pauseIntentKeys } from './lib/cancel-intent';
 import { downloadDashMuxed } from './lib/dash-download';
+import {
+  abortDashLiveRecording,
+  pauseDashLiveRecording,
+  resumeDashLiveRecording,
+  startDashLiveRecording,
+  stopDashLiveRecording,
+} from './lib/dash-live-recorder';
 import { downloadHlsMuxed } from './lib/hls-download';
+import {
+  abortLiveRecording,
+  pauseLiveRecording,
+  resumeLiveRecording,
+  startLiveRecording,
+  stopLiveRecording,
+} from './lib/hls-live-recorder';
 import { downloadHttpDirect } from './lib/http-download';
 import { downloadMerged } from './lib/merged-download';
 import { purgeOpfsOrphans } from './lib/opfs-gc';
 import { activeAbortControllers } from './lib/segment-fetcher';
+import { swLog } from './lib/sw-log';
 import { getOpfsFile, muxInWorker, removeOpfs } from './lib/worker-client';
 
 // Sweep orphaned OPFS files left over from a prior session (crash,
 // browser kill, extension reload). Fire-and-forget so the message
 // listener stays responsive for fresh downloads.
-void purgeOpfsOrphans().then(({ removed, failed }) => {
-  if (removed > 0 || failed > 0) {
-    console.log(`[Vidsy] OPFS GC: removed ${removed}, failed ${failed}`);
+void purgeOpfsOrphans().then(({ removed, failed, spared }) => {
+  if (removed > 0 || failed > 0 || spared > 0) {
+    console.log(`[Vidsy] OPFS GC: removed ${removed}, spared ${spared}, failed ${failed}`);
   }
 });
 
@@ -23,8 +39,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'offscreen/disarm-cleanup') {
+    disarmCleanupFallback(message.payload.blobUrl);
+    sendResponse({ ok: true });
+    return;
+  }
+
   if (message.type === 'offscreen/cancel') {
-    const { key } = message.payload;
+    const { key, intent } = message.payload;
+    // Record the intent BEFORE aborting — the abort propagates synchronously
+    // into the strategy's catch/finally, which reads this set.
+    if (intent === 'pause') pauseIntentKeys.add(key);
+    else pauseIntentKeys.delete(key);
     const controller = activeAbortControllers.get(key);
     if (controller) {
       controller.abort();
@@ -55,8 +81,62 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'offscreen/pause-recording') {
+    const { key, resume } = message.payload;
+    // Call both engines; the one that doesn't own this key is a no-op.
+    if (resume) {
+      resumeLiveRecording(key);
+      resumeDashLiveRecording(key);
+    } else {
+      pauseLiveRecording(key);
+      pauseDashLiveRecording(key);
+    }
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (message.type === 'offscreen/stop-recording') {
+    const { key, discard } = message.payload;
+    (async () => {
+      try {
+        if (discard) {
+          await abortLiveRecording(key);
+          await abortDashLiveRecording(key);
+          sendResponse({ ok: true, discarded: true });
+          return;
+        }
+        // Whichever engine owns the key returns the blob; the other returns null.
+        const res = (await stopLiveRecording(key)) ?? (await stopDashLiveRecording(key));
+        if (res) sendResponse({ ok: true, blobUrl: res.blobUrl, ext: res.ext });
+        else sendResponse({ ok: false, error: 'No active recording for this key' });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+    return true;
+  }
+
   if (message.type === 'offscreen/download-blob') {
     const { kind, url, fileName, output, key, headers, audioUrl, videoMimeType, audioMimeType } = message.payload;
+    swLog('download-blob received', { kind, headerKeys: Object.keys(headers ?? {}) });
+    if (kind === 'hls-live') {
+      try {
+        startLiveRecording({ playlistUrl: url, fileName, output, key, headers });
+        sendResponse({ ok: true, recording: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    }
+    if (kind === 'dash-live') {
+      try {
+        startDashLiveRecording({ manifestUrl: url, fileName, output, key, headers });
+        sendResponse({ ok: true, recording: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    }
     const handle = (p: Promise<{ blobUrl: string; ext: string }>) =>
       p
         .then(result => sendResponse({ ok: true, blobUrl: result.blobUrl, ext: result.ext }))

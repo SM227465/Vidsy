@@ -100,12 +100,20 @@ export const isDashSegment = (url: string, mime?: string) => {
   const ext = getPathExtension(url);
   const lowerUrl = url.toLowerCase();
   const lowerMime = mime?.toLowerCase() ?? '';
+  // A manifest (declared by its own mime) is never a segment, even when its URL
+  // lives under a /cmaf/ or /dash/ path. VK live serves application/dash+xml at
+  // .../cmaf/<id>/.../get, which the /cmaf/ rule below would otherwise eat.
+  if (lowerMime.includes('dash+xml') || lowerMime.includes('mpegurl')) return false;
   if (ext === '.m4s' || ext === '.cmfv' || ext === '.cmfa' || ext === '.m4v' || ext === '.m4a') return true;
-  if (lowerUrl.includes('/dash/') || lowerUrl.includes('/cmaf/') || lowerUrl.includes('range/')) return true;
-  // Typical DASH/CMAF file-naming: init.mp4, init-stream0.mp4, segment_1.mp4, chunk-0-00001.mp4
+  // 'range/' must be its own path segment — a bare substring test matched
+  // hosts/paths like "/orange/video.mp4" and suppressed real detections.
+  if (lowerUrl.includes('/dash/') || lowerUrl.includes('/cmaf/') || /(^|[/?&])range\//.test(lowerUrl)) return true;
+  // Typical DASH/CMAF file-naming: init.mp4, init-stream0.mp4, segment_1.mp4,
+  // chunk-0-00001.mp4. 'init' needs a separator after it so ordinary names
+  // like "initiation-video.mp4" don't get eaten.
   const lastSeg = lowerUrl.split('?')[0].split('/').pop() ?? '';
-  if (/^(init|segment[_-]?\d+|chunk[_-]?\d+|seg[_-]?\d+|frag[_-]?\d+)/.test(lastSeg)) return true;
-  if (lowerMime.includes('mp4') && lowerUrl.includes('seg')) return true;
+  if (/^(init([._-]|$)|segment[_-]?\d+|chunk[_-]?\d+|seg[_-]?\d+|frag[_-]?\d+)/.test(lastSeg)) return true;
+  if (lowerMime.includes('mp4') && /\bseg(ment)?[_-]?\d/.test(lowerUrl)) return true;
   return false;
 };
 

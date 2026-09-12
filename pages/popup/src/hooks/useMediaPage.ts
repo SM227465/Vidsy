@@ -3,6 +3,7 @@ import {
   mediaDetectionsStorage,
   mediaDownloadsStorage,
   mediaHistoryStorage,
+  mediaResumablesStorage,
   mediaSettingsStorage,
   exampleThemeStorage,
 } from '@extension/storage';
@@ -13,6 +14,7 @@ import type {
   MediaDownloadProgress,
   MediaHistoryItem,
   MediaItem,
+  MediaResumablesState,
   MediaSettings,
 } from '@extension/shared';
 
@@ -20,8 +22,33 @@ export const useMediaPage = () => {
   const detections = useStorage(mediaDetectionsStorage) as MediaDetectionState;
   const history = (useStorage(mediaHistoryStorage) ?? []) as MediaHistoryItem[];
   const settings = useStorage(mediaSettingsStorage) as MediaSettings;
-  const downloads = (useStorage(mediaDownloadsStorage) ?? {}) as Record<string, MediaDownloadProgress>;
+  const sessionDownloads = (useStorage(mediaDownloadsStorage) ?? {}) as Record<string, MediaDownloadProgress>;
+  const resumables = (useStorage(mediaResumablesStorage) ?? {}) as MediaResumablesState;
   const { isLight } = useStorage(exampleThemeStorage);
+
+  // Hydrate any cross-session paused downloads from the Local-backed resume
+  // manifest into the same shape the Downloads tab already renders. Only
+  // resumables whose key isn't already present in session storage are merged
+  // — once the SW re-issues a DOWNLOAD for the key, it'll show up in session
+  // storage and take precedence.
+  const downloads = useMemo((): Record<string, MediaDownloadProgress> => {
+    const merged: Record<string, MediaDownloadProgress> = { ...sessionDownloads };
+    for (const [key, manifest] of Object.entries(resumables)) {
+      if (merged[key]) continue;
+      merged[key] = {
+        key,
+        stage: 'paused',
+        downloadedBytes: manifest.downloadedBytes,
+        estimatedBytes: manifest.totalBytes,
+        item: manifest.item,
+        outputFormat: manifest.outputFormat,
+        startedAt: manifest.pausedAt,
+        updatedAt: manifest.pausedAt,
+        chunks: manifest.chunks,
+      };
+    }
+    return merged;
+  }, [sessionDownloads, resumables]);
 
   const [tabId, setTabId] = useState<number | null>(null);
   const [downloadState, setDownloadState] = useState<DownloadState>({ busyUrl: null, error: null });
@@ -135,6 +162,31 @@ export const useMediaPage = () => {
     setDownloadState({ busyUrl: null, error: null });
   };
 
+  const onRecord = async (item: MediaItem, outputFormat?: 'mp4' | 'mp3') => {
+    setMoreMenuId(null);
+    setDownloadState({ busyUrl: item.url, error: null });
+    const response = await chrome.runtime.sendMessage({
+      type: MEDIA_MESSAGE.RECORD_START,
+      payload: {
+        url: item.url,
+        key: item.url,
+        kind: item.kind,
+        fileName: item.fileName,
+        title: item.title,
+        tabId: tabId ?? undefined,
+        outputFormat: outputFormat ?? 'mp4',
+        item,
+      },
+    });
+    setDownloadState({ busyUrl: null, error: response?.ok ? null : (response?.error ?? 'Could not start recording') });
+  };
+
+  // discard=false → Stop & save (finalize/mux); discard=true → throw away the partial.
+  const onStopRecord = async (key: string, discard = false) => {
+    await chrome.runtime.sendMessage({ type: MEDIA_MESSAGE.RECORD_STOP, payload: { key, discard } });
+    setDownloadState({ busyUrl: null, error: null });
+  };
+
   const onRetry = async (entry: MediaDownloadProgress) => {
     if (!entry.item) return;
     await onDownload(entry.item, entry.outputFormat);
@@ -192,12 +244,15 @@ export const useMediaPage = () => {
     editName,
     setEditName,
     downloads,
+    resumables,
     settings,
     history,
     isLight,
     onDownload,
     onCancel,
     onPause,
+    onRecord,
+    onStopRecord,
     onRetry,
     onClearDownloads,
     onReorder,

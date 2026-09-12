@@ -100,6 +100,10 @@ type MediaSettings = {
   // before our cancel can dismiss it — a race we can't win from extension
   // land). Sticky once dismissed.
   hasSeenSaveAsHint: boolean;
+  // How long a paused HTTP-range download stays resumable across browser
+  // sessions before its OPFS scratch file gets GC'd at offscreen-doc startup.
+  // Days. Default 7. User-selectable from the Options page.
+  pausedDownloadRetentionDays: number;
 };
 
 const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
@@ -111,6 +115,7 @@ const DEFAULT_MEDIA_SETTINGS: MediaSettings = {
   downloadConnectionsPerFile: 8,
   autoCloseOnComplete: false,
   hasSeenSaveAsHint: false,
+  pausedDownloadRetentionDays: 7,
 };
 
 export const mediaDetectionsStorage = createStorage<MediaDetectionState>(

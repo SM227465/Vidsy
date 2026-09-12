@@ -30,6 +30,7 @@ export const DownloadRow = ({
   onRetry,
   onPause,
   onCancel,
+  onStopRecord,
   onRemove,
   onReorder,
   queueTotal,
@@ -39,12 +40,14 @@ export const DownloadRow = ({
   onRetry: (entry: MediaDownloadProgress) => void;
   onPause: (key: string) => void;
   onCancel: (key: string) => void;
+  onStopRecord?: (key: string) => void;
   onRemove: (key: string) => void;
   onReorder?: (key: string, direction: 'up' | 'down') => void;
   queueTotal?: number;
 }) => {
   const item = entry.item;
   const isActive = ACTIVE_STAGES.has(entry.stage);
+  const isRecording = entry.stage === 'recording';
   const isQueued = entry.stage === 'queued';
   const isSuccess = entry.stage === 'success';
   const isFailed = entry.stage === 'failed';
@@ -110,7 +113,35 @@ export const DownloadRow = ({
             </button>
           </div>
 
-          {isActive ? (
+          {isRecording ? (
+            <div className="flex items-center gap-1.5">
+              <div className="min-w-0 flex-1">
+                <DownloadProgress progress={entry} isLight={isLight} />
+              </div>
+              <button
+                className={cn(
+                  'flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-semibold transition',
+                  isLight
+                    ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                    : 'bg-blue-500/15 text-blue-400 hover:bg-blue-500/25',
+                )}
+                title="Stop recording and save"
+                onClick={() => onStopRecord?.(entry.key)}>
+                <span className="h-2 w-2 rounded-sm bg-current" /> Stop
+              </button>
+              <button
+                className={cn(
+                  'shrink-0 rounded-md p-1 transition',
+                  isLight
+                    ? 'bg-red-100 text-red-600 hover:bg-red-200'
+                    : 'bg-red-500/15 text-red-400 hover:bg-red-500/25',
+                )}
+                title="Discard recording"
+                onClick={() => onCancel(entry.key)}>
+                <IconX />
+              </button>
+            </div>
+          ) : isActive ? (
             <div className="flex items-center gap-1.5">
               <div className="min-w-0 flex-1">
                 <DownloadProgress progress={entry} isLight={isLight} />

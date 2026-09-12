@@ -20,6 +20,25 @@ export const IcoStop = () => (
   </svg>
 );
 
+export const IcoRecord = () => (
+  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+    <circle cx="12" cy="12" r="8" />
+  </svg>
+);
+
+export const IcoPause = () => (
+  <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
+    <rect x="5" y="4" width="5" height="16" rx="1" />
+    <rect x="14" y="4" width="5" height="16" rx="1" />
+  </svg>
+);
+
+export const IcoResume = () => (
+  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M7 4v16l13-8z" />
+  </svg>
+);
+
 export const IcoChev = ({ open }: { open: boolean }) => (
   <svg
     width="9"

@@ -10,6 +10,9 @@ export type SegmentSpec = {
   url: string;
   keyInfo?: HlsKeyInfo;
   sequenceNumber: number;
+  // Inclusive byte range (#EXT-X-BYTERANGE). When set, only this slice of `url`
+  // is fetched — without it every "segment" would pull the entire file.
+  byteRange?: { start: number; end: number };
 };
 
 export type FetchSegmentsRequest = {
@@ -19,8 +22,25 @@ export type FetchSegmentsRequest = {
   opfsName: string;
   segments: SegmentSpec[];
   initUrl?: string;
+  initByteRange?: { start: number; end: number };
   keyHeaders?: Record<string, string>;
   stage: 'download-video' | 'download-audio';
+};
+
+// Live recording: append a batch of newly-appeared segments to an EXISTING OPFS
+// file (opens non-truncating, never removes on error) so the accumulator grows
+// across many playlist polls. Distinct from fetch-segments, which truncates on
+// open and is a one-shot VOD fetch.
+export type AppendSegmentsRequest = {
+  type: 'append-segments';
+  jobId: string;
+  jobKey: JobKey;
+  opfsName: string;
+  segments: SegmentSpec[];
+  // Sent only on the first append of a recording (fMP4 init segment). The worker
+  // writes it once, while the accumulator is still empty.
+  initUrl?: string;
+  keyHeaders?: Record<string, string>;
 };
 
 export type FetchUrlRequest = {
@@ -90,6 +110,7 @@ export type PingRequest = { type: 'ping' };
 
 export type WorkerRequest =
   | FetchSegmentsRequest
+  | AppendSegmentsRequest
   | FetchUrlRequest
   | FetchRangesRequest
   | GetFileRequest
@@ -142,4 +163,16 @@ export type WorkerError = {
 
 export type Pong = { type: 'pong' };
 
-export type WorkerResponse = ProgressUpdate | FetchDone | MuxDone | GetFileDone | RemoveDone | WorkerError | Pong;
+// Diagnostic log relayed from the worker (no chrome.* there) to the SW console
+// via the offscreen worker-client.
+export type WorkerLog = { type: 'log'; msg: string; data?: unknown };
+
+export type WorkerResponse =
+  | ProgressUpdate
+  | FetchDone
+  | MuxDone
+  | GetFileDone
+  | RemoveDone
+  | WorkerError
+  | Pong
+  | WorkerLog;
