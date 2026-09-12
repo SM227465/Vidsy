@@ -42,12 +42,17 @@ const siteRequiredHeaders = (pageUrl?: string): Record<string, string> => {
   return {};
 };
 
-// CDN hotlink protection keys on Referer (and sometimes Origin / Cookie). The
-// browser fetch-context headers (Sec-Fetch-*, Accept-*) are noise at best, and
-// when forced onto the offscreen's fetch via DNR they make some CDNs treat it
-// as a cross-site CORS request and withhold the body — the request then hangs.
-// Inject only the auth-relevant subset.
-const AUTH_HEADER_KEYS = new Set(['referer', 'origin', 'cookie', 'user-agent', 'authorization']);
+// CDN hotlink protection keys on Referer (and sometimes Origin / Cookie). Most
+// browser fetch-context headers are noise at best: forcing Sec-Fetch-* onto the
+// offscreen's fetch via DNR makes some CDNs treat it as a cross-site CORS
+// request and withhold the body, so the request hangs. Those stay excluded.
+//
+// `accept-language` is the exception and MUST be forwarded. Some CDNs use its
+// absence as a bot signal and answer 403 — verified against tnmr.org (the
+// luluvdo embed CDN), where the identical request returns 403 without it and
+// 200 with it, with every other header held constant. It carries no CORS
+// semantics, so it does not trigger the hang that Sec-Fetch-* does.
+const AUTH_HEADER_KEYS = new Set(['referer', 'origin', 'cookie', 'user-agent', 'authorization', 'accept-language']);
 const essentialHeaders = (h: Record<string, string>): Record<string, string> => {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(h)) {

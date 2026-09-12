@@ -2,6 +2,31 @@
 
 All notable user-facing changes to Vidsy. Dates are in UTC.
 
+## 1.2.0 — 2026-09-12
+
+### Added
+- **Live stream recording** — record a live HLS stream to MP4 with Start / Pause / Stop from the on-page pill. The pill shows a REC dot, elapsed timer and captured size while running; Stop finalizes and saves, discard throws the partial away. Works on any live HLS: detection probes each `.m3u8` once and flags playlists with no `#EXT-X-ENDLIST`. Pausing holds at the live edge, so the resumed file skips the paused span rather than stalling.
+- **VK Video support** — VOD downloads on `vkvideo.ru` / `vk.com`, covering both progressive and DASH sources. The player's own title is relayed for naming, since VK's page title stays a generic "VK Video" as you navigate.
+- **VK live recording** — VK broadcasts are dynamic DASH rather than live HLS, so they are recorded by a separate engine that polls the manifest and accumulates the audio and video tracks separately, muxing them on Stop.
+- **Bilibili support** — VOD detector plus live streams on `live.bilibili.com`, where the playable stream is resolved through the site's own room API.
+- **Reddit support** — `v.redd.it` video, correctly named. Items used to be called "Reddit" because that is the whole tab title; each video is now matched to the post it belongs to, which also works in a scrolling feed where one tab holds many videos.
+- **Resolution picker for DASH** — pick a specific quality instead of always taking the highest, mirroring the existing HLS behaviour.
+- **Multi-session resume for HTTP-range downloads** — a paused download now survives a browser restart and continues from the bytes already on disk instead of starting over. Paused downloads from a previous session appear in the popup with Resume / Discard and an expiry badge, and a new Options setting controls how long they are kept (1 / 7 / 14 / 30 days, default 7). Resume validates the file on disk against the recorded chunks and falls back to a clean restart if they disagree.
+
+### Fixed
+- **Downloads far larger than the source video** — playlists that address every segment as a byte range into one file (`#EXT-X-BYTERANGE`) were unsupported, so each segment fetched the entire file. A 2:50 Reddit video downloaded as 1.6 GB of the same 36 MB repeated. Ranges are now honoured, and a CDN that ignores the `Range` header is handled locally so the bug cannot return silently.
+- **Silent downloads on streams with a separate audio track** — when a playlist carries audio as its own `#EXT-X-MEDIA` rendition, only the video track was fetched and the saved file had no sound. Both tracks are now downloaded and muxed. Choosing a resolution no longer discards the audio track either.
+- **403 errors from some CDNs** — the request built for the download dropped `Accept-Language`, which some CDNs treat as a bot signal, failing the download before it began.
+- **The pill sat in the page corner instead of on the video** — players hosted in an iframe (VK among them) were never found, so the pill fell back to the top-right of the window.
+- **The pill froze at a stale percentage** — a download whose background worker had died left a record that the pill latched onto, showing an old percentage while the real download ran on. It now follows the most recently updated download.
+- **Recordings saved with a wrong duration or filename**, and the paused timer continued to advance while recording was paused.
+- **The download-info modal failed to appear** on pages where the extension had not yet been injected; the required script is now injected on demand.
+- **"Downloading… 13%" looked like clipped text** in the pill, and the width jittered as the percentage changed.
+
+### Changed
+- **DASH downloads always mux** video and audio rather than depending on the HLS merging preference.
+- HLS variants that repeat the same resolution are collapsed to one entry per quality — some sites list every resolution twice, which showed eight choices where there were four.
+
 ## 1.1.0 — 2026-06-03
 
 ### Added
